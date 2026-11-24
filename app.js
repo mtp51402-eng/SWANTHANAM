@@ -17,9 +17,9 @@
     MAX_TRIES: 5,
     LOCK_MS: 30000
   };
-  const COLS = ["items", "loans", "requests", "replies", "announcements", "services", "members", "staff", "info", "settings"];
+  const COLS = ["items", "loans", "requests", "replies", "announcements", "services", "members", "codes", "staff", "info", "settings"];
   const PUBLIC_COLS = ["items", "announcements", "services", "info"];
-  const BACKUP_COLS = ["items", "loans", "requests", "replies", "announcements", "services", "members", "staff"];
+  const BACKUP_COLS = ["items", "loans", "requests", "replies", "announcements", "services", "members", "codes", "staff"];
   const CATEGORIES = ["വീൽചെയർ", "വാക്കർ", "ക്രച്ചസ് / വടി", "ഹോസ്പിറ്റൽ കട്ടിൽ", "എയർ / വാട്ടർ ബെഡ്", "കമ്മോഡ് ചെയർ", "ഓക്സിജൻ കോൺസെൻട്രേറ്റർ", "നെബുലൈസർ", "BP / ഷുഗർ മെഷീൻ", "മറ്റുള്ളവ"];
   const SOURCES = { donation: "ദാനം ലഭിച്ചത്", purchase: "വാങ്ങിയത്" };
   const REQ_STATUS = { new: "പുതിയത്", approved: "അനുവദിച്ചു", waiting: "ലഭ്യമാകുമ്പോൾ അറിയിക്കും", declined: "ഇപ്പോൾ ലഭ്യമല്ല", cancelled: "റദ്ദാക്കി" };
@@ -134,17 +134,17 @@
      3. STATE & LOCAL PERSISTENCE
      ===================================================================== */
   const defaultInfo = () => ({ id: "main", updatedAt: 0, name: "സ്വാന്തന കേന്ദ്രം", tag: "മുസ്ലിം ജമാഅത്ത് • SYS • SSF", place: "പാലത്തുങ്കര", phone: "", wa: "", hours: "", about: "രോഗികൾക്കും വികലാംഗർക്കും ആവശ്യമായ ഉപകരണങ്ങൾ ആവശ്യക്കാർക്ക് ഉപയോഗത്തിനായി നൽകുന്ന സേവന കേന്ദ്രം." });
-  const defaultSettings = () => ({ id: "main", updatedAt: 0, adminHash: pinHash("1234"), entryCode: "1000" });
+  const defaultSettings = () => ({ id: "main", updatedAt: 0, adminHash: pinHash("1234"), adminCode: "1234" });
   function defaultState() {
     return {
       v: 1,
-      data: { items: {}, loans: {}, requests: {}, replies: {}, announcements: {}, services: {}, members: {}, staff: {}, info: { main: defaultInfo() }, settings: { main: defaultSettings() } },
+      data: { items: {}, loans: {}, requests: {}, replies: {}, announcements: {}, services: {}, members: {}, codes: {}, staff: {}, info: { main: defaultInfo() }, settings: { main: defaultSettings() } },
       dirty: {}, lastSync: 0, lastAutoBackup: "", lock: { n: 0, until: 0 }, theme: "light", myReq: [], me: null
     };
   }
   let state = defaultState();
   let session = null; // { role:'admin'|'staff', name, id }
-  let ui = { tab: "p_items", cat: "all", search: "", loanF: "out", loanQ: "", reqF: "new", gate: false, hash: null, month: monthNow() };
+  let ui = { reg: false, regDone: null, tab: "p_items", cat: "all", search: "", loanF: "out", loanQ: "", reqF: "new", gate: false, hash: null, month: monthNow() };
   let persistTimer = null, dbPromise = null;
   // Office info doubles as "biz" for the PDF writer
   const S = () => ({ biz: state.data.info.main });
@@ -181,7 +181,7 @@
       if (!Array.isArray(state.myReq)) state.myReq = [];
       if (!state.me || typeof state.me !== "object") state.me = null;
       const inf = state.data.info.main; if (inf && inf.name === "\u0d38\u0d3e\u0d28\u0d4d\u0d24\u0d4d\u0d35\u0d28\u0d02" && !inf.updatedAt) { inf.name = defaultInfo().name; }
-      const sm = state.data.settings.main; if (sm && sm.entryCode == null) sm.entryCode = "1000";
+      const sm = state.data.settings.main; if (sm && sm.adminCode == null && sm.adminHash === pinHash("1234")) sm.adminCode = "1234";
     }
   }
   function persist() { clearTimeout(persistTimer); persistTimer = setTimeout(persistNow, 250); }
@@ -361,14 +361,33 @@
   /* =====================================================================
      7. LOGIN (staff / admin)
      ===================================================================== */
+  const genBase = (name) => segs(String(name || "").normalize("NFC").replace(/[^\p{L}\p{M}\p{N}]/gu, "")).slice(0, 3).join("").toLowerCase();
+  async function uniqueCode(name, digits, mid) {
+    const base = genBase(name) || "mem";
+    const taken = async (c) => {
+      const hs = pinHash(c);
+      if (hs === ST().adminHash || live("staff").some((x) => x.pinHash === hs)) return true;
+      const l = state.data.codes[c]; if (l && !l.deleted && l.memberId !== mid) return true;
+      if (online() && hasDb()) { try { const r = await withTimeout(getJson("codes/" + c), 6000); if (r && !r.deleted && r.memberId && r.memberId !== mid) return true; } catch (e) { /* offline: local check only */ } }
+      return false;
+    };
+    for (let n = 3; n <= 10; n++) { const c = base + digits.slice(0, n); if (!(await taken(c))) return c; }
+    return base + digits;
+  }
   function gateView() {
-    const b = INFO(), me = state.me, st = statusText();
-    return '<div class="login gate"><div class="login-card"><div class="login-head"><div class="logo">' + ICON.heart + "</div><h1>" + h(b.name) + '</h1><div class="place">' + h(b.place) + '</div>' + (b.tag ? '<div class="tag">' + h(b.tag) + "</div>" : "") + "</div>" +
-      '<div class="login-body" style="text-align:left"><h2>' + ICON.lock + ' എൻട്രി കോഡ്</h2><p>പൊതു എൻട്രി കോഡ് — അല്ലെങ്കിൽ അഡ്മിൻ / കമ്മിറ്റി / സ്റ്റാഫ് കോഡ് നൽകി പ്രവേശിക്കാം</p>' +
-      '<input id="g_code" class="in code" type="password" autocomplete="off" autocapitalize="off" placeholder="കോഡ് നൽകുക"><div class="pin-err" id="gateErr"></div><button type="button" class="btn block lg" data-act="enter">' + ICON.check + "പ്രവേശിക്കുക</button>" +
-      '<div class="or"><span>അല്ലെങ്കിൽ</span></div><h2>' + ICON.user + ' ജോയിൻ ചെയ്യുക</h2><p>പേര്, ഫോൺ നമ്പർ, സ്ഥലം എന്നിവ നൽകി ചേരാം</p>' +
-      '<div class="stack"><input id="g_name" class="in" placeholder="പേര്" autocomplete="name" value="' + h(me ? me.name : "") + '"><input id="g_phone" class="in" placeholder="ഫോൺ നമ്പർ" inputmode="tel" autocomplete="tel" value="' + h(me ? me.phone : "") + '"><input id="g_place" class="in" placeholder="സ്ഥലം" value="' + h(me ? me.place : "") + '"></div><div class="pin-err" id="joinErr"></div><button type="button" class="btn ghost block lg" data-act="join">' + ICON.users + "ജോയിൻ ചെയ്യുക</button>" +
-      '<div class="sync-note"><span class="dot ' + st[0] + '" id="syncDot"></span><span id="syncText">' + h(st[1]) + "</span></div>" + (me ? '<div class="center"><button type="button" class="linkbtn" data-act="gate-back">← തിരികെ പോകുക</button></div>' : "") + "</div></div></div>";
+    const b = INFO(), st = statusText(); let body;
+    if (ui.regDone) {
+      const d = ui.regDone;
+      body = '<div class="g-done"><div class="g-ok">' + ICON.check + "</div><h2>" + (d.existing ? "നേരത്തെ രജിസ്റ്റർ ചെയ്തിട്ടുണ്ട്" : "രജിസ്ട്രേഷൻ പൂർത്തിയായി") + "</h2><p>" + h(d.name) + '</p><div class="g-code"><small>നിങ്ങളുടെ കോഡ്</small><b>' + h(d.code) + '</b></div><p class="g-hint">ഈ കോഡ് സൂക്ഷിച്ചുവെക്കുക. അടുത്ത തവണ ഇത് നൽകി നേരിട്ട് പ്രവേശിക്കാം.</p><div class="row wrap"><button type="button" class="btn ghost grow" data-act="copy-code">പകർത്തുക</button><button type="button" class="btn grow" data-act="reg-done">തുടരുക</button></div></div>';
+    } else if (ui.reg) {
+      body = '<h2 class="g-h">പുതിയ രജിസ്റ്റർ</h2><div class="stack"><input id="g_name" class="in" placeholder="പേര്" autocomplete="name"><input id="g_phone" class="in" placeholder="ഫോൺ നമ്പർ" inputmode="tel" autocomplete="tel"><input id="g_place" class="in" placeholder="സ്ഥലം"></div><div class="pin-err" id="regErr"></div><button type="button" class="btn block lg" data-act="register">രജിസ്റ്റർ ചെയ്യുക</button>' +
+        '<p class="g-hint">കോഡ് മറന്നുപോയെങ്കിൽ പേരും ഫോൺ നമ്പറും നൽകി രജിസ്റ്റർ ചെയ്യുക — നിങ്ങളുടെ കോഡ് കാണിക്കും.</p><div class="center"><button type="button" class="linkbtn" data-act="reg-back">← കോഡ് ഉപയോഗിച്ച് പ്രവേശിക്കുക</button></div>';
+    } else {
+      body = '<label class="g-l" for="g_code">കോഡ്</label><div class="codefield"><input id="g_code" class="in code" type="password" autocomplete="off" autocapitalize="off" spellcheck="false"><button type="button" class="eye" data-act="eye">കാണുക</button></div><div class="pin-err" id="gateErr"></div><button type="button" class="btn block lg" data-act="enter">പ്രവേശിക്കുക</button>' +
+        '<div class="or"><span>അല്ലെങ്കിൽ</span></div><button type="button" class="btn ghost block lg" data-act="reg-open">' + ICON.user + "പുതിയ രജിസ്റ്റർ</button>";
+    }
+    return '<div class="gate2"><div class="g-top"><div class="g-logo">' + ICON.heart + "</div><h1>" + h(b.name) + '</h1><div class="g-place"><i></i><span>' + h(b.place) + "</span><i></i></div>" + (b.tag ? '<div class="g-tag">' + h(b.tag) + "</div>" : "") + '</div><div class="g-sheet">' + body +
+      '<div class="sync-note"><span class="dot ' + st[0] + '" id="syncDot"></span><span id="syncText">' + h(st[1]) + "</span></div></div></div>";
   }
   const gateMsg = (id, msg) => { const e = $("#" + id); if (e) e.textContent = msg || ""; };
   async function enter() {
@@ -386,23 +405,33 @@
       session = sess; ui.gate = false; ui.tab = "s_home";
       autoBackupCheck(); render(); toast("സ്വാഗതം " + sess.name); sync(false); return;
     }
-    if (ST().entryCode && code === codeKey(ST().entryCode)) {
-      state.lock = { n: 0, until: 0 }; state.me = state.me || { name: "", phone: "", place: "", id: "" };
-      ui.gate = false; ui.tab = "p_items"; persist(); render(); toast("സ്വാഗതം"); sync(false); return;
+    let mrec = state.data.codes[code];
+    if ((!mrec || mrec.deleted) && online() && hasDb()) { try { mrec = await withTimeout(getJson("codes/" + code), 6000); } catch (e) { /* ignore */ } }
+    if (mrec && !mrec.deleted && mrec.memberId) {
+      state.lock = { n: 0, until: 0 }; state.me = { name: mrec.name, phone: mrec.phone, place: mrec.place, id: mrec.memberId, code };
+      ui.gate = false; ui.tab = "p_items"; persist(); render(); toast("സ്വാഗതം " + mrec.name); sync(false); return;
     }
     state.lock.n++;
     if (state.lock.n >= CFG.MAX_TRIES) { state.lock = { n: 0, until: Date.now() + CFG.LOCK_MS }; gateMsg("gateErr", "5 തവണ തെറ്റി. 30 സെക്കൻഡ് കാത്തിരിക്കുക."); }
-    else gateMsg("gateErr", "തെറ്റായ കോഡ്! (" + (CFG.MAX_TRIES - state.lock.n) + " ശ്രമങ്ങൾ ബാക്കി)");
+    else gateMsg("gateErr", "കോഡ് ശരിയല്ല (" + (CFG.MAX_TRIES - state.lock.n) + " ശ്രമങ്ങൾ ബാക്കി). കോഡ് ഇല്ലെങ്കിൽ 'പുതിയ രജിസ്റ്റർ' അമർത്തുക.");
     persist();
   }
-  function join() {
+  async function register() {
     const name = clean(($("#g_name") || {}).value), digits = String(($("#g_phone") || {}).value || "").replace(/\D/g, "").slice(-10), place = clean(($("#g_place") || {}).value);
-    if (!name) return gateMsg("joinErr", "പേര് നൽകുക");
-    if (digits.length < 10) return gateMsg("joinErr", "ശരിയായ ഫോൺ നമ്പർ നൽകുക (10 അക്കം)");
-    if (!place) return gateMsg("joinErr", "സ്ഥലം നൽകുക");
-    const id = "m" + digits, old = state.data.members[id];
-    save("members", { id, name, phone: digits, place, at: old ? old.at : Date.now(), deleted: false });
-    state.me = { name, phone: digits, place, id }; ui.gate = false; ui.tab = "p_items"; persist(); render(); toast("സ്വാഗതം " + name); sync(false);
+    if (!name) return gateMsg("regErr", "പേര് നൽകുക");
+    if (digits.length < 10) return gateMsg("regErr", "ശരിയായ ഫോൺ നമ്പർ നൽകുക (10 അക്കം)");
+    if (!place) return gateMsg("regErr", "സ്ഥലം നൽകുക");
+    gateMsg("regErr", "പരിശോധിക്കുന്നു…");
+    const id = "m" + digits; let rec = byId("members", id), existing = false;
+    if (!rec && online() && hasDb()) { try { const r = await withTimeout(getJson("members/" + id), 7000); if (r && !r.deleted) { rec = r; state.data.members[id] = r; } } catch (e) { /* offline */ } }
+    if (rec && rec.code) existing = true;
+    else {
+      const code = await uniqueCode(rec ? rec.name : name, digits, id);
+      rec = Object.assign({}, rec || {}, { id, name: rec ? rec.name : name, phone: digits, place: rec ? rec.place : place, at: rec ? rec.at : Date.now(), deleted: false, code });
+      save("members", rec); save("codes", { id: code, memberId: id, name: rec.name, phone: digits, place: rec.place, deleted: false });
+    }
+    state.me = { name: rec.name, phone: digits, place: rec.place, id, code: rec.code };
+    ui.regDone = { name: rec.name, code: rec.code, existing }; persist(); render(); sync(false);
   }
   function logout() { session = null; ui.tab = "p_items"; ui.gate = false; modal = null; renderModal(); render(); }
 
@@ -415,7 +444,7 @@
   function render() {
     const root = $("#root");
     if (ui.hash) { root.innerHTML = replyPageView(); return; }
-    if (!session && (!state.me || ui.gate)) { root.innerHTML = gateView(); return; }
+    if (!session && (!state.me || ui.gate || ui.regDone)) { root.innerHTML = gateView(); return; }
     const b = INFO(), st = statusText();
     const tabs = session ? staffTabs() : PUB_TABS;
     if (!tabs.some((t) => t[0] === ui.tab)) ui.tab = tabs[0][0];
@@ -423,7 +452,7 @@
     root.innerHTML =
       '<div class="app"><header class="header"><div class="header-in"><div class="brand"><div class="logo">' + ICON.heart + '</div><div style="min-width:0"><b>' + h(b.name) + (session ? '<span class="role ' + (isAdmin() ? "" : "staff") + '">' + (isAdmin() ? "ADMIN" : "STAFF") + "</span>" : "") + "</b><small>" + h(b.place) + (b.tag ? " • " + h(b.tag) : "") + "</small></div></div>" +
       '<div class="hbtns"><button type="button" class="hb" data-act="theme" aria-label="Theme">' + (state.theme === "dark" ? ICON.sun : ICON.moon) + '</button><button type="button" class="hb" data-act="install" id="btnInstall" aria-label="Install">' + ICON.phone2 + "</button>" +
-      (session ? '<button type="button" class="hb red" data-act="logout">' + ICON.lock + "<span>ലോക്ക്</span></button>" : '<button type="button" class="hb" data-act="to-gate">' + ICON.user + "<span>സ്റ്റാഫ്</span></button>") + "</div></div>" +
+      (session ? '<button type="button" class="hb red" data-act="logout">' + ICON.lock + "<span>ലോക്ക്</span></button>" : '<button type="button" class="hb" data-act="pub-out">' + ICON.user + "<span>പുറത്ത്</span></button>") + "</div></div>" +
       '<div class="statusbar"><span class="dot ' + st[0] + '" id="syncDot"></span><span id="syncText">' + h(st[1]) + "</span></div></header>" +
       '<main class="main" id="app">' + paneHtml() + '</main><nav class="dock">' + tabs.map((t) => '<button type="button" data-act="tab" data-t="' + t[0] + '" class="' + (ui.tab === t[0] ? "on" : "") + '">' + ICON[t[2]] + "<span>" + t[1] + "</span>" + badge(t[0]) + "</button>").join("") + "</nav></div>";
     const inst = $("#btnInstall"); if (inst) inst.hidden = isStandalone();
@@ -472,7 +501,7 @@
   /* ---------- PUBLIC ---------- */
   function pubItemsView() {
     const b = INFO(), items = filteredItems();
-    return '<section class="hero"><div class="hero-t">' + h(b.name) + '</div><p>' + h(b.about) + '</p><div class="row wrap">' + (b.phone ? '<a class="btn amber sm" href="tel:' + h(b.phone) + '">' + ICON.phone + "വിളിക്കുക</a>" : "") + (waNum(b.wa || b.phone) ? '<a class="btn ghost sm" target="_blank" rel="noopener" href="https://wa.me/' + waNum(b.wa || b.phone) + '">' + ICON.msg + "WhatsApp</a>" : "") + "</div></section>" +
+    return '<section class="hero"><div class="hero-t">' + h(b.name) + '</div><p>' + h(b.about) + '</p><div class="hero-st"><i class="mk g"></i>' + live("items").filter((i) => shownAvail(i) > 0).length + " ഉപകരണങ്ങൾ ഇപ്പോൾ ലഭ്യമാണ്</div>" + '<div class="row wrap">' + (b.phone ? '<a class="btn amber sm" href="tel:' + h(b.phone) + '">' + ICON.phone + "വിളിക്കുക</a>" : "") + (waNum(b.wa || b.phone) ? '<a class="btn ghost sm" target="_blank" rel="noopener" href="https://wa.me/' + waNum(b.wa || b.phone) + '">' + ICON.msg + "WhatsApp</a>" : "") + "</div></section>" +
       announceCards(3) + servicesCards() +
       '<section class="card stack"><label class="searchbox">' + ICON.search + '<input class="in" data-ui="search" placeholder="ഉപകരണം തിരയുക… (വീൽചെയർ, വാക്കർ…)" value="' + h(ui.search) + '"></label>' + catChips() + "</section>" +
       '<div class="grid-cards">' + (items.length ? items.map((it) => '<article class="icard ' + (shownAvail(it) > 0 ? "ok" : "no") + '"><div class="row between"><div class="t">' + h(it.name) + "</div>" + lamp(it) + '</div><div class="s">' + h(it.category || "മറ്റുള്ളവ") + (it.note ? " • " + h(it.note) : "") + '</div><button type="button" class="btn block ' + (shownAvail(it) > 0 ? "" : "ghost") + '" data-act="req" data-id="' + h(it.id) + '">' + ICON.hand + (shownAvail(it) > 0 ? "അപേക്ഷിക്കുക" : "ലഭ്യമാകുമ്പോൾ അറിയിക്കുക") + "</button></article>").join("") : emptyBox(live("items").length ? "ഒന്നും കണ്ടെത്തിയില്ല" : "ഉപകരണങ്ങൾ ഉടൻ ചേർക്കും")) + "</div>" +
@@ -560,7 +589,7 @@
     const hd = (t, sub, btn) => '<div class="row between pad-s"><div><h2>' + t + "</h2>" + (sub ? '<div class="muted">' + sub + "</div>" : "") + "</div>" + (btn || "") + "</div>";
     const eb = (act, id, ic, cls) => '<button type="button" class="btn sm ghost ' + (cls || "") + '" data-act="' + act + '" data-id="' + h(id) + '">' + ic + "</button>";
     if (isAdmin()) {
-      o += (ST().adminHash === pinHash("1234") ? '<div class="banner red">⚠️ ഡിഫോൾട്ട് അഡ്മിൻ കോഡ് (1234) ഇപ്പോഴും ഉപയോഗത്തിലുണ്ട്. ഉടൻ മാറ്റുക.</div>' : "") + (ST().entryCode === "1000" ? '<div class="banner red">⚠️ പൊതു എൻട്രി കോഡ് ഡിഫോൾട്ട് (1000) ആണ്. നിങ്ങളുടെ കോഡ് നൽകുക.</div>' : "");
+      o += (ST().adminHash === pinHash("1234") ? '<div class="banner red">⚠️ ഡിഫോൾട്ട് അഡ്മിൻ കോഡ് (1234) ഇപ്പോഴും ഉപയോഗത്തിലുണ്ട്. ഉടൻ മാറ്റുക.</div>' : "") ;
     }
     if (can("ann")) {
       const arr = live("announcements").sort((a, c) => (c.at || 0) - (a.at || 0));
@@ -575,14 +604,14 @@
     if (can("members")) {
       const arr = live("members").sort((a, c) => (c.at || 0) - (a.at || 0));
       o += '<section class="card">' + hd("ജോയിൻ ചെയ്തവർ (" + arr.length + ")", "പേര്, ഫോൺ, സ്ഥലം നൽകി ചേർന്നവർ") + '<div class="list">' +
-        (arr.length ? arr.map((m) => '<div class="li wrapli"><div class="av">' + h(initial(m.name)) + '</div><div class="grow"><div class="t">' + h(m.name) + '</div><div class="s">' + h(m.phone) + " • " + h(m.place) + " • " + h(fmtDate(isoOf(new Date(m.at || Date.now())))) + '</div></div><div class="acts-row row">' + telBtn(m.phone) + waBtn(m.phone) + (isAdmin() ? eb("del-member", m.id, ICON.trash, "red") : "") + "</div></div>").join("") : emptyBox("ആരും ജോയിൻ ചെയ്തിട്ടില്ല")) + "</div></section>";
+        (arr.length ? arr.map((m) => '<div class="li wrapli"><div class="av">' + h(initial(m.name)) + '</div><div class="grow"><div class="t">' + h(m.name) + '</div><div class="s">' + h(m.phone) + " • " + h(m.place) + " • " + h(fmtDate(isoOf(new Date(m.at || Date.now())))) + '</div><div class="s">കോഡ്: <b class="codechip">' + h(m.code || "—") + '</b></div></div><div class="acts-row row">' + telBtn(m.phone) + waBtn(m.phone) + (isAdmin() ? eb("del-member", m.id, ICON.trash, "red") : "") + "</div></div>").join("") : emptyBox("ആരും ജോയിൻ ചെയ്തിട്ടില്ല")) + "</div></section>";
     }
     if (isAdmin()) {
       o += '<section class="card stack"><h2>ഓഫീസ് വിവരങ്ങൾ</h2><label class="f">പേര്<input id="b_name" class="in" value="' + h(b.name) + '"></label><label class="f">ടാഗ്‌ലൈൻ<input id="b_tag" class="in" value="' + h(b.tag) + '"></label><div class="g2"><label class="f">സ്ഥലം<input id="b_place" class="in" value="' + h(b.place) + '"></label><label class="f">ഫോൺ<input id="b_phone" class="in" inputmode="tel" value="' + h(b.phone) + '"></label></div><label class="f">WhatsApp നമ്പർ<input id="b_wa" class="in" inputmode="tel" value="' + h(b.wa) + '"></label><label class="f">പ്രവർത്തന സമയം<input id="b_hours" class="in" value="' + h(b.hours) + '" placeholder="ഉദാ: രാവിലെ 9 – വൈകിട്ട് 5"></label><label class="f">വിവരണം<textarea id="b_about" class="ta" rows="3">' + h(b.about) + '</textarea></label><button type="button" class="btn" data-act="save-info">സേവ്</button></section>' +
         '<section class="card">' + hd("സ്റ്റാഫ്", "ഓരോരുത്തർക്കും സ്വന്തം കോഡും അനുമതികളും", '<button type="button" class="btn sm" data-act="add-staff">' + ICON.plus + "പുതിയത്</button>") + '<div class="list">' +
-        (live("staff").length ? live("staff").sort(byName).map((p) => '<div class="li"><div class="av">' + h(initial(p.name)) + '</div><div class="grow"><div class="t">' + h(p.name) + '</div><div class="s">' + PERMS.filter((x) => (p.perms && x[0] in p.perms ? p.perms[x[0]] : x[2])).length + " / " + PERMS.length + " അനുമതികൾ</div></div>" + eb("edit-staff", p.id, ICON.edit) + eb("del-staff", p.id, ICON.trash, "red") + "</div>").join("") : emptyBox("സ്റ്റാഫ് ഇല്ല")) + "</div></section>" +
-        '<section class="card stack"><h2>കോഡുകൾ</h2><label class="f">പൊതു എൻട്രി കോഡ് (എല്ലാവർക്കും നൽകാം)<input id="a_entry" class="in" autocomplete="off" maxlength="12" value="' + h(ST().entryCode || "") + '"></label><button type="button" class="btn" data-act="save-entry">എൻട്രി കോഡ് സേവ് ചെയ്യുക</button>' +
-        '<label class="f" style="margin-top:8px">പുതിയ അഡ്മിൻ കോഡ് (4–12 അക്ഷരം/അക്കം)<input id="a_pin" class="in" autocomplete="off" maxlength="12"></label><button type="button" class="btn ghost" data-act="save-pin">അഡ്മിൻ കോഡ് മാറ്റുക</button></section>';
+        (live("staff").length ? live("staff").sort(byName).map((p) => '<div class="li"><div class="av">' + h(initial(p.name)) + '</div><div class="grow"><div class="t">' + h(p.name) + '</div><div class="s">' + PERMS.filter((x) => (p.perms && x[0] in p.perms ? p.perms[x[0]] : x[2])).length + " / " + PERMS.length + ' അനുമതികൾ</div><div class="s">കോഡ്: <b class="codechip">' + h(p.code || "മാറ്റിയാൽ കാണാം") + "</b></div></div>" + eb("edit-staff", p.id, ICON.edit) + eb("del-staff", p.id, ICON.trash, "red") + "</div>").join("") : emptyBox("സ്റ്റാഫ് ഇല്ല")) + "</div></section>" +
+        '<section class="card stack"><h2>കോഡുകൾ</h2><div class="codebox"><span>അഡ്മിൻ കോഡ്</span><b>' + h(ST().adminCode || "മാറ്റിയാൽ കാണാം") + '</b></div>' + live("staff").sort(byName).map((p) => '<div class="codebox"><span>' + h(p.name) + "</span><b>" + h(p.code || "—") + "</b></div>").join("") +
+        '<label class="f" style="margin-top:8px">അഡ്മിൻ കോഡ് മാറ്റുക (4–12 അക്ഷരം/അക്കം)<input id="a_pin" class="in" autocomplete="off" maxlength="12" placeholder="പുതിയ കോഡ്"></label><button type="button" class="btn ghost" data-act="save-pin">അഡ്മിൻ കോഡ് മാറ്റുക</button><div class="muted">സ്റ്റാഫിന്റെ കോഡ് മാറ്റാൻ മുകളിലെ സ്റ്റാഫ് പട്ടികയിൽ എഡിറ്റ് അമർത്തുക.</div></section>';
     }
     if (can("reports")) {
       o += '<section class="card stack"><h2>റിപ്പോർട്ട്</h2><div class="muted">മാസാവസാനം ആരൊക്കെ, ഏതൊക്കെ ഉപകരണങ്ങൾ കൊണ്ടുപോയി എന്ന PDF (പ്രിന്റ് ചെയ്യാം)</div><label class="f">മാസം<input id="rp_month" type="month" class="in" value="' + h(ui.month) + '"></label><div class="row wrap"><button type="button" class="btn" data-act="month-pdf">' + ICON.file + 'മാസ റിപ്പോർട്ട് PDF</button><button type="button" class="btn ghost" data-act="month-wa">' + ICON.msg + 'WhatsApp</button></div>' +
@@ -936,15 +965,15 @@
     const cur = (k, d) => (rec && rec.perms && k in rec.perms ? !!rec.perms[k] : !!d);
     openModal({
       title: rec ? "സ്റ്റാഫ് എഡിറ്റ്" : "പുതിയ സ്റ്റാഫ്",
-      body: '<label class="f">പേര്<input id="mf_name" class="in" value="' + h(rec ? rec.name : "") + '"></label><label class="f">കോഡ് (4–12 അക്ഷരം/അക്കം)' + (rec ? " — മാറ്റാൻ മാത്രം നൽകുക" : "") + '<input id="mf_pin" class="in" autocomplete="off" maxlength="12"></label>' +
+      body: '<label class="f">പേര്<input id="mf_name" class="in" value="' + h(rec ? rec.name : "") + '"></label><label class="f">കോഡ് (4–12 അക്ഷരം/അക്കം, ഇംഗ്ലീഷ്)<input id="mf_pin" class="in" autocomplete="off" maxlength="12" value="' + h(rec && rec.code ? rec.code : "") + '"></label>' +
         '<div class="permbox"><b>ചെയ്യാൻ അനുവദിക്കുന്നവ</b>' + PERMS.map((p) => '<label class="chk"><input type="checkbox" id="pm_' + p[0] + '"' + (cur(p[0], p[2]) ? " checked" : "") + "><span>" + h(p[1]) + "</span></label>").join("") + "</div>",
       onOk() {
         const name = clean(mv("name")); if (!name) return modalErr("പേര് നൽകുക.");
         const p = codeKey(mv("pin")); if (!rec && !validCode(p)) return modalErr("4–12 അക്ഷരം/അക്കമുള്ള കോഡ് നൽകുക."); if (p && !validCode(p)) return modalErr("കോഡ് 4–12 അക്ഷരം/അക്കം (ഇംഗ്ലീഷ് അക്ഷരം, സംഖ്യ) മാത്രം ആകണം.");
         const hs = p ? pinHash(p) : rec.pinHash;
-        if (hs === ST().adminHash || (p && p === codeKey(ST().entryCode)) || live("staff").some((x) => x.id !== (rec && rec.id) && x.pinHash === hs)) return modalErr("ഈ കോഡ് ഉപയോഗത്തിലുണ്ട്. മറ്റൊന്ന് നൽകുക.");
+        if (hs === ST().adminHash || (p && state.data.codes[p] && !state.data.codes[p].deleted) || live("staff").some((x) => x.id !== (rec && rec.id) && x.pinHash === hs)) return modalErr("ഈ കോഡ് ഉപയോഗത്തിലുണ്ട്. മറ്റൊന്ന് നൽകുക.");
         const perms = {}; PERMS.forEach((x) => { perms[x[0]] = !!($("#pm_" + x[0]) && $("#pm_" + x[0]).checked); });
-        save("staff", Object.assign(rec ? {} : { id: uid("st"), deleted: false }, rec || {}, { name, pinHash: hs, perms })); toast("✅ സേവ് ചെയ്തു"); render();
+        save("staff", Object.assign(rec ? {} : { id: uid("st"), deleted: false }, rec || {}, { name, pinHash: hs, perms, code: p || (rec ? rec.code || "" : "") })); toast("✅ സേവ് ചെയ്തു"); render();
       }
     });
   }
@@ -987,9 +1016,13 @@
   function sendAsk(l) { l.askedAt = Date.now(); save("loans", l); openWa(l.phone, askText(l)); }
 
   const actions = {
-    enter, join,
-    "to-gate"() { ui.gate = true; render(); },
-    "gate-back"() { ui.gate = false; render(); },
+    enter, register,
+    "reg-open"() { ui.reg = true; render(); },
+    "reg-back"() { ui.reg = false; render(); },
+    "reg-done"() { ui.regDone = null; ui.reg = false; ui.gate = false; ui.tab = "p_items"; render(); sync(false); },
+    "pub-out"() { state.me = null; ui.gate = false; ui.reg = false; ui.regDone = null; persist(); render(); },
+    eye(el) { const i = $("#g_code"); if (!i) return; const show = i.type === "password"; i.type = show ? "text" : "password"; el.textContent = show ? "മറയ്ക്കുക" : "കാണുക"; },
+    "copy-code"() { const c = ui.regDone && ui.regDone.code; if (c && navigator.clipboard) navigator.clipboard.writeText(c).then(() => toast("കോഡ് പകർത്തി"), () => toast("പകർത്താൻ കഴിഞ്ഞില്ല", "error")); else toast("കോഡ് സ്വയം എഴുതിവെക്കുക"); },
     logout,
     theme() { state.theme = state.theme === "dark" ? "light" : "dark"; applyTheme(); persist(); render(); },
     install: async function () { if (installPrompt) { installPrompt.prompt(); try { await installPrompt.userChoice; } catch (e) { /* ignore */ } installPrompt = null; } else toast("ബ്രൗസർ മെനുവിലെ 'Install app' / 'Add to Home Screen' ഉപയോഗിക്കുക."); },
@@ -1040,13 +1073,7 @@
     "add-svc"() { if (need("services")) svcModal(); },
     "edit-svc"(el) { const r = byId("services", el.dataset.id); if (r && need("services")) svcModal(r); },
     "del-svc"(el) { const r = byId("services", el.dataset.id); if (r && need("services")) delConfirm("പ്രവർത്തനം നീക്കം ചെയ്യണോ?", r.title, () => softDelete("services", r.id)); },
-    "del-member"(el) { const r = byId("members", el.dataset.id); if (r && isAdmin()) delConfirm("ജോയിൻ ചെയ്തയാളെ നീക്കം ചെയ്യണോ?", r.name, () => softDelete("members", r.id)); },
-    "save-entry"() {
-      if (!isAdmin()) return; const c = codeKey($("#a_entry").value);
-      if (!validCode(c)) return toast("എൻട്രി കോഡ് 4–12 അക്ഷരം/അക്കം ആയിരിക്കണം", "error");
-      const hs = pinHash(c); if (hs === ST().adminHash || live("staff").some((x) => x.pinHash === hs)) return toast("ഈ കോഡ് അഡ്മിൻ/സ്റ്റാഫ് കോഡ് ആണ്. മറ്റൊന്ന് നൽകുക", "error");
-      const st = ST(); st.entryCode = c; save("settings", st); toast("✅ എൻട്രി കോഡ് മാറ്റി"); render();
-    },
+    "del-member"(el) { const r = byId("members", el.dataset.id); if (r && isAdmin()) delConfirm("ജോയിൻ ചെയ്തയാളെ നീക്കം ചെയ്യണോ?", r.name, () => { softDelete("members", r.id); if (r.code && state.data.codes[r.code]) softDelete("codes", r.code); }); },
     "month-pdf"(el) { if (!need("reports")) return; ui.month = ($("#rp_month") || {}).value || monthNow(); el.disabled = true; buildMonthPdf(ui.month).then((u) => { download(new Blob([u], { type: "application/pdf" }), "Swanthana_" + ui.month + ".pdf"); toast("PDF ഡൗൺലോഡ് ചെയ്തു"); }).catch(() => toast("PDF നിർമ്മിക്കാൻ കഴിഞ്ഞില്ല", "error")).then(() => { el.disabled = false; }); },
     "month-wa"() {
       if (!need("reports")) return; ui.month = ($("#rp_month") || {}).value || monthNow();
@@ -1064,8 +1091,8 @@
     "save-pin"() {
       if (!isAdmin()) return;
       const a = codeKey($("#a_pin").value); if (!validCode(a)) return toast("കോഡ് 4–12 അക്ഷരം/അക്കം (ഇംഗ്ലീഷ്/സംഖ്യ) ആയിരിക്കണം", "error");
-      const hs = pinHash(a); if (live("staff").some((x) => x.pinHash === hs) || a === codeKey(ST().entryCode)) return toast("ഈ കോഡ് ഉപയോഗത്തിലുണ്ട്", "error");
-      const s2 = ST(); s2.adminHash = hs; save("settings", s2); toast("✅ കോഡ് മാറ്റി"); render();
+      const hs = pinHash(a); if (live("staff").some((x) => x.pinHash === hs) || (state.data.codes[a] && !state.data.codes[a].deleted)) return toast("ഈ കോഡ് ഉപയോഗത്തിലുണ്ട്", "error");
+      const s2 = ST(); s2.adminHash = hs; s2.adminCode = a; save("settings", s2); toast("✅ കോഡ് മാറ്റി"); render();
     },
     async "stock-pdf"(el) { if (!need("reports")) return; el.disabled = true; try { download(new Blob([await buildStockPdf()], { type: "application/pdf" }), "Santhwanam_Stock_" + todayIso() + ".pdf"); toast("PDF ഡൗൺലോഡ് ചെയ്തു"); } catch (e) { toast("PDF നിർമ്മിക്കാൻ കഴിഞ്ഞില്ല", "error"); } el.disabled = false; },
     "stock-wa"() {
@@ -1143,7 +1170,7 @@
     });
     document.addEventListener("keydown", (ev) => {
       if (ev.key === "Escape" && modal) { closeModal(); return; }
-      if (ev.key === "Enter" && !session && !modal && (!state.me || ui.gate) && ev.target.tagName === "INPUT") { ev.preventDefault(); if (ev.target.id === "g_code") enter(); else join(); return; }
+      if (ev.key === "Enter" && !session && !modal && (!state.me || ui.gate || ui.regDone) && ev.target.tagName === "INPUT") { ev.preventDefault(); if (ev.target.id === "g_code") enter(); else register(); return; }
       if (ev.key === "Enter" && modal && ev.target.tagName === "INPUT" && modal.onOk) { ev.preventDefault(); actions["modal-ok"](); }
     });
     window.addEventListener("online", () => { updateStatus(); sync(false); });
@@ -1171,7 +1198,7 @@
     if (online()) sync(false);
     setInterval(() => { if (online() && document.visibilityState === "visible" && !syncing && !ui.hash) sync(false); }, CFG.POLL_MS);
     if (window.__SNT_TEST) {
-      window.__SNT = { state: () => state, session: () => session, ui: () => ui, render, actions, save, mergeRemote, availQty, outQty, shownAvail, updateAvail, askText, allowText, buildStockPdf, pinHash, replyOf, setSession: (r) => { session = r ? { role: r, name: r, id: r } : null; }, live, replyCtx: () => replyCtx, can, enter, join, buildMonthPdf, monthLoans };
+      window.__SNT = { state: () => state, session: () => session, ui: () => ui, render, actions, save, mergeRemote, availQty, outQty, shownAvail, updateAvail, askText, allowText, buildStockPdf, pinHash, replyOf, setSession: (r) => { session = r ? { role: r, name: r, id: r } : null; }, live, replyCtx: () => replyCtx, can, enter, register, buildMonthPdf, monthLoans };
     }
   }
   boot();
