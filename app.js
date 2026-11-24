@@ -1,4 +1,4 @@
-/* സാന്ത്വനം — ഉപകരണ ലൈബ്രറി (പാലത്തുങ്കര)
+/* സ്വാന്തന കേന്ദ്രം — ഉപകരണ ലൈബ്രറി (പാലത്തുങ്കര)
    Offline-first PWA. Data: IndexedDB (device) ⇄ Firebase Realtime Database (REST). */
 (function () {
   "use strict";
@@ -17,9 +17,9 @@
     MAX_TRIES: 5,
     LOCK_MS: 30000
   };
-  const COLS = ["items", "loans", "requests", "replies", "announcements", "staff", "info", "settings"];
-  const PUBLIC_COLS = ["items", "announcements", "info"];
-  const BACKUP_COLS = ["items", "loans", "requests", "replies", "announcements", "staff"];
+  const COLS = ["items", "loans", "requests", "replies", "announcements", "services", "members", "staff", "info", "settings"];
+  const PUBLIC_COLS = ["items", "announcements", "services", "info"];
+  const BACKUP_COLS = ["items", "loans", "requests", "replies", "announcements", "services", "members", "staff"];
   const CATEGORIES = ["വീൽചെയർ", "വാക്കർ", "ക്രച്ചസ് / വടി", "ഹോസ്പിറ്റൽ കട്ടിൽ", "എയർ / വാട്ടർ ബെഡ്", "കമ്മോഡ് ചെയർ", "ഓക്സിജൻ കോൺസെൻട്രേറ്റർ", "നെബുലൈസർ", "BP / ഷുഗർ മെഷീൻ", "മറ്റുള്ളവ"];
   const SOURCES = { donation: "ദാനം ലഭിച്ചത്", purchase: "വാങ്ങിയത്" };
   const REQ_STATUS = { new: "പുതിയത്", approved: "അനുവദിച്ചു", waiting: "ലഭ്യമാകുമ്പോൾ അറിയിക്കും", declined: "ഇപ്പോൾ ലഭ്യമല്ല", cancelled: "റദ്ദാക്കി" };
@@ -133,19 +133,19 @@
   /* =====================================================================
      3. STATE & LOCAL PERSISTENCE
      ===================================================================== */
-  const defaultInfo = () => ({ id: "main", updatedAt: 0, name: "സാന്ത്വനം", tag: "മുസ്ലിം ജമാഅത്ത് • SYS • SSF", place: "പാലത്തുങ്കര", phone: "", wa: "", hours: "", about: "രോഗികൾക്കും വികലാംഗർക്കും ആവശ്യമായ ഉപകരണങ്ങൾ ആവശ്യക്കാർക്ക് ഉപയോഗത്തിനായി നൽകുന്ന സേവന കേന്ദ്രം." });
-  const defaultSettings = () => ({ id: "main", updatedAt: 0, adminHash: pinHash("1234") });
+  const defaultInfo = () => ({ id: "main", updatedAt: 0, name: "സ്വാന്തന കേന്ദ്രം", tag: "മുസ്ലിം ജമാഅത്ത് • SYS • SSF", place: "പാലത്തുങ്കര", phone: "", wa: "", hours: "", about: "രോഗികൾക്കും വികലാംഗർക്കും ആവശ്യമായ ഉപകരണങ്ങൾ ആവശ്യക്കാർക്ക് ഉപയോഗത്തിനായി നൽകുന്ന സേവന കേന്ദ്രം." });
+  const defaultSettings = () => ({ id: "main", updatedAt: 0, adminHash: pinHash("1234"), entryCode: "1000" });
   function defaultState() {
     return {
       v: 1,
-      data: { items: {}, loans: {}, requests: {}, replies: {}, announcements: {}, staff: {}, info: { main: defaultInfo() }, settings: { main: defaultSettings() } },
-      dirty: {}, lastSync: 0, lastAutoBackup: "", lock: { n: 0, until: 0 }, theme: "light", myReq: []
+      data: { items: {}, loans: {}, requests: {}, replies: {}, announcements: {}, services: {}, members: {}, staff: {}, info: { main: defaultInfo() }, settings: { main: defaultSettings() } },
+      dirty: {}, lastSync: 0, lastAutoBackup: "", lock: { n: 0, until: 0 }, theme: "light", myReq: [], me: null
     };
   }
   let state = defaultState();
   let session = null; // { role:'admin'|'staff', name, id }
-  let ui = { tab: "p_items", cat: "all", search: "", loanF: "out", loanQ: "", reqF: "new", login: false, hash: null };
-  let persistTimer = null, dbPromise = null, pin = "";
+  let ui = { tab: "p_items", cat: "all", search: "", loanF: "out", loanQ: "", reqF: "new", gate: false, hash: null, month: monthNow() };
+  let persistTimer = null, dbPromise = null;
   // Office info doubles as "biz" for the PDF writer
   const S = () => ({ biz: state.data.info.main });
   const INFO = () => state.data.info.main;
@@ -179,6 +179,9 @@
       if (!state.dirty) state.dirty = {};
       if (!state.lock) state.lock = { n: 0, until: 0 };
       if (!Array.isArray(state.myReq)) state.myReq = [];
+      if (!state.me || typeof state.me !== "object") state.me = null;
+      const inf = state.data.info.main; if (inf && inf.name === "\u0d38\u0d3e\u0d28\u0d4d\u0d24\u0d4d\u0d35\u0d28\u0d02" && !inf.updatedAt) { inf.name = defaultInfo().name; }
+      const sm = state.data.settings.main; if (sm && sm.entryCode == null) sm.entryCode = "1000";
     }
   }
   function persist() { clearTimeout(persistTimer); persistTimer = setTimeout(persistNow, 250); }
@@ -195,6 +198,16 @@
   const byId = (col, id) => { const r = state.data[col][id]; return r && !r.deleted ? r : null; };
   const isAdmin = () => !!session && session.role === "admin";
   const isStaff = () => !!session;
+  const PERMS = [["item_edit", "ഉപകരണങ്ങൾ ചേർക്കാനും തിരുത്താനും", 1], ["item_del", "ഉപകരണം നീക്കം ചെയ്യാൻ", 0], ["lend", "ഉപകരണം നൽകാനും തിരിച്ചെടുക്കാനും", 1], ["view_loans", "കൊണ്ടുപോയവരുടെ വിവരങ്ങൾ കാണാൻ", 1], ["loan_edit", "നൽകിയ എൻട്രി തിരുത്താനും നീക്കാനും", 0], ["remind", "WhatsApp ഉണർത്തൽ അയക്കാൻ", 1], ["reqs", "അപേക്ഷകൾ കൈകാര്യം ചെയ്യാൻ", 1], ["ann", "അറിയിപ്പുകൾ നൽകാൻ", 0], ["services", "പ്രവർത്തനങ്ങൾ ചേർക്കാൻ", 0], ["members", "ജോയിൻ ചെയ്തവരുടെ പട്ടിക കാണാൻ", 0], ["reports", "PDF റിപ്പോർട്ടുകൾ എടുക്കാൻ", 1]];
+  const can = (k) => {
+    if (!session) return false; if (session.role === "admin") return true;
+    const st = state.data.staff[session.id], p = st && st.perms;
+    if (p && k in p) return !!p[k];
+    const d = PERMS.find((x) => x[0] === k); return !!(d && d[2]);
+  };
+  const need = (k) => { if (can(k)) return true; toast("ഈ പ്രവർത്തനത്തിന് അനുമതി ഇല്ല", "error"); return false; };
+  const codeKey = (x) => clean(x).toLowerCase();
+  const validCode = (c) => /^[a-z0-9]{4,12}$/.test(c);
   const byName = (a, b) => String(a.name).localeCompare(String(b.name), "ml");
   const newest = (a, b) => (b.createdAt || 0) - (a.createdAt || 0);
 
@@ -265,7 +278,7 @@
     root.requests = mine;
     return mergeRemote(root);
   }
-  async function pullAuth() { return mergeRemote({ settings: await getJson("settings"), staff: await getJson("staff") }); }
+  async function pullAuth() { return mergeRemote({ settings: await getJson("settings"), staff: await getJson("staff"), info: await getJson("info") }); }
   async function push() {
     const keys = Object.keys(state.dirty);
     for (let i = 0; i < keys.length; i += 4) {
@@ -348,49 +361,61 @@
   /* =====================================================================
      7. LOGIN (staff / admin)
      ===================================================================== */
-  function loginView() {
-    const b = INFO();
-    const dots = [0, 1, 2, 3].map((i) => '<i class="' + (i < pin.length ? "on" : "") + '"></i>').join("");
-    const keys = ["1", "2", "3", "4", "5", "6", "7", "8", "9"].map((k) => '<button type="button" data-act="pin" data-k="' + k + '">' + k + "</button>").join("");
-    return '<div class="login"><div class="login-card"><div class="login-head"><div class="logo">' + ICON.heart + "</div><h1>" + h(b.name) + '</h1><div class="tag">സ്റ്റാഫ് / അഡ്മിൻ ലോഗിൻ</div></div>' +
-      '<div class="login-body"><h2>സുരക്ഷാ പിൻ നൽകുക</h2><p>ഓഫീസ് സ്റ്റാഫ് പിൻ അല്ലെങ്കിൽ അഡ്മിൻ പിൻ</p><div class="dots" id="dots">' + dots + '</div><div class="pin-err" id="pinErr"></div>' +
-      '<div class="pad">' + keys + '<button type="button" class="sec" data-act="pin-clear">CLEAR</button><button type="button" data-act="pin" data-k="0">0</button><button type="button" class="sec2" data-act="pin-back" aria-label="Backspace">' + ICON.delete + "</button></div>" +
-      '<div class="sync-note"><span class="dot ' + statusText()[0] + '" id="syncDot"></span><span id="syncText">' + h(statusText()[1]) + '</span></div><button type="button" class="linkbtn" data-act="login-cancel">← പൊതു പേജിലേക്ക് തിരികെ</button></div></div></div>';
+  function gateView() {
+    const b = INFO(), me = state.me, st = statusText();
+    return '<div class="login gate"><div class="login-card"><div class="login-head"><div class="logo">' + ICON.heart + "</div><h1>" + h(b.name) + '</h1><div class="place">' + h(b.place) + '</div>' + (b.tag ? '<div class="tag">' + h(b.tag) + "</div>" : "") + "</div>" +
+      '<div class="login-body" style="text-align:left"><h2>' + ICON.lock + ' എൻട്രി കോഡ്</h2><p>പൊതു എൻട്രി കോഡ് — അല്ലെങ്കിൽ അഡ്മിൻ / കമ്മിറ്റി / സ്റ്റാഫ് കോഡ് നൽകി പ്രവേശിക്കാം</p>' +
+      '<input id="g_code" class="in code" type="password" autocomplete="off" autocapitalize="off" placeholder="കോഡ് നൽകുക"><div class="pin-err" id="gateErr"></div><button type="button" class="btn block lg" data-act="enter">' + ICON.check + "പ്രവേശിക്കുക</button>" +
+      '<div class="or"><span>അല്ലെങ്കിൽ</span></div><h2>' + ICON.user + ' ജോയിൻ ചെയ്യുക</h2><p>പേര്, ഫോൺ നമ്പർ, സ്ഥലം എന്നിവ നൽകി ചേരാം</p>' +
+      '<div class="stack"><input id="g_name" class="in" placeholder="പേര്" autocomplete="name" value="' + h(me ? me.name : "") + '"><input id="g_phone" class="in" placeholder="ഫോൺ നമ്പർ" inputmode="tel" autocomplete="tel" value="' + h(me ? me.phone : "") + '"><input id="g_place" class="in" placeholder="സ്ഥലം" value="' + h(me ? me.place : "") + '"></div><div class="pin-err" id="joinErr"></div><button type="button" class="btn ghost block lg" data-act="join">' + ICON.users + "ജോയിൻ ചെയ്യുക</button>" +
+      '<div class="sync-note"><span class="dot ' + st[0] + '" id="syncDot"></span><span id="syncText">' + h(st[1]) + "</span></div>" + (me ? '<div class="center"><button type="button" class="linkbtn" data-act="gate-back">← തിരികെ പോകുക</button></div>' : "") + "</div></div></div>";
   }
-  function updateDots() { const d = $("#dots"); if (d) d.innerHTML = [0, 1, 2, 3].map((i) => '<i class="' + (i < pin.length ? "on" : "") + '"></i>').join(""); }
-  function pinMsg(msg) { const e = $("#pinErr"); if (e) e.textContent = msg || ""; }
-  async function verifyPin() {
-    const entered = pin, now = Date.now();
-    if (state.lock.until > now) { pin = ""; updateDots(); pinMsg("കുറച്ച് സമയത്തിന് ശേഷം ശ്രമിക്കുക (" + Math.ceil((state.lock.until - now) / 1000) + " സെക്കൻഡ്)"); return; }
-    if (!state.lastSync && online() && hasDb()) { pinMsg("പരിശോധിക്കുന്നു…"); try { await withTimeout(pullAuth(), 8000); } catch (e) { /* use local */ } pinMsg(""); }
-    const hs = pinHash(entered);
+  const gateMsg = (id, msg) => { const e = $("#" + id); if (e) e.textContent = msg || ""; };
+  async function enter() {
+    const code = codeKey(($("#g_code") || {}).value), now = Date.now();
+    if (!code) return gateMsg("gateErr", "കോഡ് നൽകുക");
+    if (state.lock.until > now) return gateMsg("gateErr", "കുറച്ച് സമയത്തിന് ശേഷം ശ്രമിക്കുക (" + Math.ceil((state.lock.until - now) / 1000) + " സെക്കൻഡ്)");
+    gateMsg("gateErr", "പരിശോധിക്കുന്നു…");
+    if (online() && hasDb()) { try { await withTimeout(pullAuth(), 7000); } catch (e) { /* use local copy */ } }
+    const hs = pinHash(code);
     let sess = null;
     if (hs === ST().adminHash) sess = { role: "admin", name: "അഡ്മിൻ", id: "admin" };
-    else { const st = live("staff").find((x) => x.pinHash === hs); if (st) sess = { role: "staff", name: st.name, id: st.id }; }
+    else { const stf = live("staff").find((x) => x.pinHash === hs); if (stf) sess = { role: "staff", name: stf.name, id: stf.id }; }
     if (sess) {
       state.lock = { n: 0, until: 0 }; persist();
-      pin = ""; session = sess; ui.login = false; ui.tab = "s_home";
-      autoBackupCheck(); render(); toast("സ്വാഗതം " + sess.name); sync(false);
-      return;
+      session = sess; ui.gate = false; ui.tab = "s_home";
+      autoBackupCheck(); render(); toast("സ്വാഗതം " + sess.name); sync(false); return;
+    }
+    if (ST().entryCode && code === codeKey(ST().entryCode)) {
+      state.lock = { n: 0, until: 0 }; state.me = state.me || { name: "", phone: "", place: "", id: "" };
+      ui.gate = false; ui.tab = "p_items"; persist(); render(); toast("സ്വാഗതം"); sync(false); return;
     }
     state.lock.n++;
-    if (state.lock.n >= CFG.MAX_TRIES) { state.lock = { n: 0, until: Date.now() + CFG.LOCK_MS }; pinMsg("5 തവണ തെറ്റി. 30 സെക്കൻഡ് കാത്തിരിക്കുക."); }
-    else pinMsg("തെറ്റായ പിൻ! (" + (CFG.MAX_TRIES - state.lock.n) + " ശ്രമങ്ങൾ ബാക്കി)");
-    persist(); pin = ""; updateDots();
-    const d = $("#dots"); if (d) { d.classList.remove("shake"); void d.offsetWidth; d.classList.add("shake"); }
+    if (state.lock.n >= CFG.MAX_TRIES) { state.lock = { n: 0, until: Date.now() + CFG.LOCK_MS }; gateMsg("gateErr", "5 തവണ തെറ്റി. 30 സെക്കൻഡ് കാത്തിരിക്കുക."); }
+    else gateMsg("gateErr", "തെറ്റായ കോഡ്! (" + (CFG.MAX_TRIES - state.lock.n) + " ശ്രമങ്ങൾ ബാക്കി)");
+    persist();
   }
-  function logout() { session = null; pin = ""; ui.tab = "p_items"; ui.login = false; modal = null; renderModal(); render(); }
+  function join() {
+    const name = clean(($("#g_name") || {}).value), digits = String(($("#g_phone") || {}).value || "").replace(/\D/g, "").slice(-10), place = clean(($("#g_place") || {}).value);
+    if (!name) return gateMsg("joinErr", "പേര് നൽകുക");
+    if (digits.length < 10) return gateMsg("joinErr", "ശരിയായ ഫോൺ നമ്പർ നൽകുക (10 അക്കം)");
+    if (!place) return gateMsg("joinErr", "സ്ഥലം നൽകുക");
+    const id = "m" + digits, old = state.data.members[id];
+    save("members", { id, name, phone: digits, place, at: old ? old.at : Date.now(), deleted: false });
+    state.me = { name, phone: digits, place, id }; ui.gate = false; ui.tab = "p_items"; persist(); render(); toast("സ്വാഗതം " + name); sync(false);
+  }
+  function logout() { session = null; ui.tab = "p_items"; ui.gate = false; modal = null; renderModal(); render(); }
 
   /* =====================================================================
      8. SHELL
      ===================================================================== */
   const isStandalone = () => window.matchMedia("(display-mode: standalone)").matches || window.navigator.standalone === true;
   const PUB_TABS = [["p_items", "ഉപകരണങ്ങൾ", "heart"], ["p_my", "എന്റെ അപേക്ഷ", "inbox"], ["p_contact", "ബന്ധപ്പെടുക", "phone"]];
-  const staffTabs = () => [["s_home", "ഹോം", "home"], ["s_items", "ഉപകരണങ്ങൾ", "box"], ["s_loans", "കൊടുത്തവ", "hand"], ["s_reqs", "അപേക്ഷകൾ", "inbox"], ["s_more", isAdmin() ? "അഡ്മിൻ" : "കൂടുതൽ", "settings"]];
+  const staffTabs = () => [["s_home", "ഹോം", "home"], ["s_items", "ഉപകരണങ്ങൾ", "box"], ["s_loans", "കൊടുത്തവ", "hand"], ["s_reqs", "അപേക്ഷകൾ", "inbox"], ["s_more", isAdmin() ? "അഡ്മിൻ" : "കൂടുതൽ", "settings"]].filter((t) => (t[0] !== "s_loans" || can("view_loans")) && (t[0] !== "s_reqs" || can("reqs")));
   function render() {
     const root = $("#root");
     if (ui.hash) { root.innerHTML = replyPageView(); return; }
-    if (!session && ui.login) { root.innerHTML = loginView(); return; }
+    if (!session && (!state.me || ui.gate)) { root.innerHTML = gateView(); return; }
     const b = INFO(), st = statusText();
     const tabs = session ? staffTabs() : PUB_TABS;
     if (!tabs.some((t) => t[0] === ui.tab)) ui.tab = tabs[0][0];
@@ -398,7 +423,7 @@
     root.innerHTML =
       '<div class="app"><header class="header"><div class="header-in"><div class="brand"><div class="logo">' + ICON.heart + '</div><div style="min-width:0"><b>' + h(b.name) + (session ? '<span class="role ' + (isAdmin() ? "" : "staff") + '">' + (isAdmin() ? "ADMIN" : "STAFF") + "</span>" : "") + "</b><small>" + h(b.place) + (b.tag ? " • " + h(b.tag) : "") + "</small></div></div>" +
       '<div class="hbtns"><button type="button" class="hb" data-act="theme" aria-label="Theme">' + (state.theme === "dark" ? ICON.sun : ICON.moon) + '</button><button type="button" class="hb" data-act="install" id="btnInstall" aria-label="Install">' + ICON.phone2 + "</button>" +
-      (session ? '<button type="button" class="hb red" data-act="logout">' + ICON.lock + "<span>ലോക്ക്</span></button>" : '<button type="button" class="hb" data-act="to-login">' + ICON.user + "<span>സ്റ്റാഫ്</span></button>") + "</div></div>" +
+      (session ? '<button type="button" class="hb red" data-act="logout">' + ICON.lock + "<span>ലോക്ക്</span></button>" : '<button type="button" class="hb" data-act="to-gate">' + ICON.user + "<span>സ്റ്റാഫ്</span></button>") + "</div></div>" +
       '<div class="statusbar"><span class="dot ' + st[0] + '" id="syncDot"></span><span id="syncText">' + h(st[1]) + "</span></div></header>" +
       '<main class="main" id="app">' + paneHtml() + '</main><nav class="dock">' + tabs.map((t) => '<button type="button" data-act="tab" data-t="' + t[0] + '" class="' + (ui.tab === t[0] ? "on" : "") + '">' + ICON[t[2]] + "<span>" + t[1] + "</span>" + badge(t[0]) + "</button>").join("") + "</nav></div>";
     const inst = $("#btnInstall"); if (inst) inst.hidden = isStandalone();
@@ -426,7 +451,13 @@
   const opt = (v, label, sel, extra) => '<option value="' + h(v) + '"' + (sel ? " selected" : "") + (extra || "") + ">" + h(label) + "</option>";
   const telBtn = (p) => (p ? '<a class="ib" href="tel:' + h(p) + '" aria-label="Call">' + ICON.phone + "</a>" : "");
   const waBtn = (p) => (waNum(p) ? '<a class="ib wa" target="_blank" rel="noopener" href="https://wa.me/' + waNum(p) + '" aria-label="WhatsApp">' + ICON.msg + "</a>" : "");
-  const availChip = (it) => { const a = shownAvail(it); return a > 0 ? '<span class="chip">ലഭ്യം ' + a + "</span>" : '<span class="chip rose">ഇപ്പോൾ ലഭ്യമല്ല</span>'; };
+  const availChip = (it) => { const a = shownAvail(it); return a > 0 ? '<span class="chip ok"><i class="mk g"></i>ലഭ്യം ' + a + "</span>" : '<span class="chip rose"><i class="mk r"></i>ലഭ്യമല്ല</span>'; };
+  const lamp = (it) => shownAvail(it) > 0 ? '<span class="lamp-b g"><i class="lamp"></i><b>ലഭ്യമാണ്</b><small>ഇപ്പോൾ എടുക്കാം</small></span>' : '<span class="lamp-b r"><i class="lamp"></i><b>ലഭ്യമല്ല</b><small>ഇപ്പോൾ ഇല്ല</small></span>';
+  const servicesCards = () => {
+    const arr = live("services").sort((a, b) => (a.order || 0) - (b.order || 0) || (a.at || 0) - (b.at || 0));
+    if (!arr.length) return "";
+    return '<section class="card"><div class="pad-s"><h2>ഞങ്ങളുടെ പ്രവർത്തനങ്ങൾ</h2></div><div class="list">' + arr.map((x) => '<div class="li wrapli"><div class="av">' + ICON.heart + '</div><div class="grow"><div class="t">' + h(x.title) + "</div>" + (x.text ? '<div class="s">' + h(x.text) + "</div>" : "") + "</div></div>").join("") + "</div></section>";
+  };
   const catChips = () => {
     const used = Array.from(new Set(live("items").map((i) => i.category || "മറ്റുള്ളവ")));
     return '<div class="chips"><button type="button" data-act="cat" data-c="all" class="' + (ui.cat === "all" ? "on" : "") + '">എല്ലാം</button>' + used.map((c) => '<button type="button" data-act="cat" data-c="' + h(c) + '" class="' + (ui.cat === c ? "on" : "") + '">' + h(c) + "</button>").join("") + "</div>";
@@ -442,9 +473,9 @@
   function pubItemsView() {
     const b = INFO(), items = filteredItems();
     return '<section class="hero"><div class="hero-t">' + h(b.name) + '</div><p>' + h(b.about) + '</p><div class="row wrap">' + (b.phone ? '<a class="btn amber sm" href="tel:' + h(b.phone) + '">' + ICON.phone + "വിളിക്കുക</a>" : "") + (waNum(b.wa || b.phone) ? '<a class="btn ghost sm" target="_blank" rel="noopener" href="https://wa.me/' + waNum(b.wa || b.phone) + '">' + ICON.msg + "WhatsApp</a>" : "") + "</div></section>" +
-      announceCards(3) +
+      announceCards(3) + servicesCards() +
       '<section class="card stack"><label class="searchbox">' + ICON.search + '<input class="in" data-ui="search" placeholder="ഉപകരണം തിരയുക… (വീൽചെയർ, വാക്കർ…)" value="' + h(ui.search) + '"></label>' + catChips() + "</section>" +
-      '<div class="grid-cards">' + (items.length ? items.map((it) => '<article class="icard"><div class="row between"><div class="t">' + h(it.name) + "</div>" + availChip(it) + '</div><div class="s">' + h(it.category || "മറ്റുള്ളവ") + (it.note ? " • " + h(it.note) : "") + '</div><button type="button" class="btn block ' + (shownAvail(it) > 0 ? "" : "ghost") + '" data-act="req" data-id="' + h(it.id) + '">' + ICON.hand + (shownAvail(it) > 0 ? "അപേക്ഷിക്കുക" : "ലഭ്യമാകുമ്പോൾ അറിയിക്കുക") + "</button></article>").join("") : emptyBox(live("items").length ? "ഒന്നും കണ്ടെത്തിയില്ല" : "ഉപകരണങ്ങൾ ഉടൻ ചേർക്കും")) + "</div>" +
+      '<div class="grid-cards">' + (items.length ? items.map((it) => '<article class="icard ' + (shownAvail(it) > 0 ? "ok" : "no") + '"><div class="row between"><div class="t">' + h(it.name) + "</div>" + lamp(it) + '</div><div class="s">' + h(it.category || "മറ്റുള്ളവ") + (it.note ? " • " + h(it.note) : "") + '</div><button type="button" class="btn block ' + (shownAvail(it) > 0 ? "" : "ghost") + '" data-act="req" data-id="' + h(it.id) + '">' + ICON.hand + (shownAvail(it) > 0 ? "അപേക്ഷിക്കുക" : "ലഭ്യമാകുമ്പോൾ അറിയിക്കുക") + "</button></article>").join("") : emptyBox(live("items").length ? "ഒന്നും കണ്ടെത്തിയില്ല" : "ഉപകരണങ്ങൾ ഉടൻ ചേർക്കും")) + "</div>" +
       '<section class="card stack"><b>ഇവിടെ ഇല്ലാത്ത ഉപകരണം വേണോ?</b><div class="muted">ലിസ്റ്റിൽ ഇല്ലാത്ത ഉപകരണത്തിനും അപേക്ഷ നൽകാം. ഓഫീസ് സ്റ്റാഫ് ബന്ധപ്പെടും.</div><button type="button" class="btn ghost block" data-act="req" data-id="">' + ICON.plus + "മറ്റൊരു ഉപകരണത്തിന് അപേക്ഷിക്കുക</button></section>";
   }
   function myReqView() {
@@ -455,7 +486,7 @@
     const b = INFO();
     return '<section class="card stack"><h2>' + h(b.name) + '</h2><div class="muted">' + h(b.tag) + '</div><p style="margin:0">' + h(b.about) + "</p>" +
       (b.place ? '<div class="kv"><span>സ്ഥലം</span><b>' + h(b.place) + "</b></div>" : "") + (b.hours ? '<div class="kv"><span>പ്രവർത്തന സമയം</span><b>' + h(b.hours) + "</b></div>" : "") + (b.phone ? '<div class="kv"><span>ഫോൺ</span><b>' + h(b.phone) + "</b></div>" : "") +
-      '<div class="row wrap">' + (b.phone ? '<a class="btn" href="tel:' + h(b.phone) + '">' + ICON.phone + "വിളിക്കുക</a>" : "") + (waNum(b.wa || b.phone) ? '<a class="btn ghost" target="_blank" rel="noopener" href="https://wa.me/' + waNum(b.wa || b.phone) + '">' + ICON.msg + "WhatsApp</a>" : "") + "</div></section>" + announceCards(10);
+      '<div class="row wrap">' + (b.phone ? '<a class="btn" href="tel:' + h(b.phone) + '">' + ICON.phone + "വിളിക്കുക</a>" : "") + (waNum(b.wa || b.phone) ? '<a class="btn ghost" target="_blank" rel="noopener" href="https://wa.me/' + waNum(b.wa || b.phone) + '">' + ICON.msg + "WhatsApp</a>" : "") + "</div></section>" + servicesCards() + announceCards(10);
   }
   function reqCard(r, staff) {
     const cls = { new: "amber", approved: "", waiting: "blue", declined: "rose", cancelled: "" }[r.status] || "";
@@ -470,21 +501,21 @@
     const od = activeLoans().filter(isOverdue), np = pendingReq(), ur = unackReplies();
     return '<div class="tiles"><div class="tile hero"><div class="lbl">ആകെ ഉപകരണങ്ങൾ</div><div class="val">' + total + '</div><div class="sub">' + items.length + ' ഇനങ്ങൾ</div></div><div class="tile"><div class="lbl">ഉപയോഗത്തിൽ</div><div class="val">' + out + '</div><div class="sub">' + activeLoans().length + ' പേർ</div></div>' +
       '<div class="tile amber"><div class="lbl">പുതിയ അപേക്ഷകൾ</div><div class="val">' + np.length + '</div><div class="sub">മറുപടി നൽകാനുണ്ട്</div></div><div class="tile rose"><div class="lbl">തിരിച്ചേൽപ്പിക്കാൻ വൈകിയവ</div><div class="val">' + od.length + '</div><div class="sub">ഓർമ്മപ്പെടുത്താം</div></div></div>' +
-      (ur.length ? '<section class="card"><div class="pad-s"><h2>📩 ഉപയോക്താക്കളുടെ മറുപടികൾ</h2></div><div class="list">' + ur.map((l) => { const r = replyOf(l); return '<div class="li wrapli"><div class="grow"><div class="t">' + h(l.borrower) + " • " + h(l.itemName) + '</div><div class="s"><b>' + h(ANSWERS[r.answer] || r.answer) + "</b>" + (r.when ? " • " + h(fmtDate(r.when)) : "") + (r.msg ? " — " + h(r.msg) : "") + '</div></div><div class="acts-row row">' + telBtn(l.phone) + '<button type="button" class="btn sm" data-act="ack-reply" data-id="' + h(l.id) + '">' + ICON.check + "കണ്ടു</button>" + (r.answer === "return" ? '<button type="button" class="btn sm ghost" data-act="return" data-id="' + h(l.id) + '">തിരിച്ചെടുത്തു</button>' : "") + "</div></div>"; }).join("") + "</div></section>" : "") +
+      (ur.length ? '<section class="card"><div class="pad-s"><h2>📩 ഉപയോക്താക്കളുടെ മറുപടികൾ</h2></div><div class="list">' + ur.map((l) => { const r = replyOf(l); return '<div class="li wrapli"><div class="grow"><div class="t">' + h(l.borrower) + " • " + h(l.itemName) + '</div><div class="s"><b>' + h(ANSWERS[r.answer] || r.answer) + "</b>" + (r.when ? " • " + h(fmtDate(r.when)) : "") + (r.msg ? " — " + h(r.msg) : "") + '</div></div><div class="acts-row row">' + telBtn(l.phone) + '<button type="button" class="btn sm" data-act="ack-reply" data-id="' + h(l.id) + '">' + ICON.check + "കണ്ടു</button>" + (r.answer === "return" && can("lend") ? '<button type="button" class="btn sm ghost" data-act="return" data-id="' + h(l.id) + '">തിരിച്ചെടുത്തു</button>' : "") + "</div></div>"; }).join("") + "</div></section>" : "") +
       '<section class="card"><div class="row between pad-s"><h2>പുതിയ അപേക്ഷകൾ</h2><button type="button" class="btn sm ghost" data-act="tab" data-t="s_reqs">എല്ലാം</button></div><div class="list">' + (np.length ? np.sort(newest).slice(0, 5).map((r) => reqCard(r, true)).join("") : emptyBox("പുതിയ അപേക്ഷകൾ ഇല്ല")) + "</div></section>" +
-      '<div class="row wrap"><button type="button" class="btn grow" data-act="lend">' + ICON.hand + 'ഉപകരണം നൽകുക</button>' + (isAdmin() ? '<button type="button" class="btn ghost grow" data-act="add-item">' + ICON.plus + "പുതിയ ഉപകരണം</button>" : "") + "</div>" + announceCards(3);
+      '<div class="row wrap">' + (can("lend") ? '<button type="button" class="btn grow" data-act="lend">' + ICON.hand + 'ഉപകരണം നൽകുക</button>' : "") + '' + (can("item_edit") ? '<button type="button" class="btn ghost grow" data-act="add-item">' + ICON.plus + "പുതിയ ഉപകരണം</button>" : "") + "</div>" + announceCards(3);
   }
 
   /* ---------- STAFF: items ---------- */
   function itemsView() {
     const items = filteredItems();
-    return '<section class="card stack"><div class="row between"><h2>ഉപകരണങ്ങൾ</h2>' + (isAdmin() ? '<button type="button" class="btn sm" data-act="add-item">' + ICON.plus + "പുതിയത്</button>" : "") + '</div><label class="searchbox">' + ICON.search + '<input class="in" data-ui="search" placeholder="തിരയുക…" value="' + h(ui.search) + '"></label>' + catChips() + "</section>" +
+    return '<section class="card stack"><div class="row between"><h2>ഉപകരണങ്ങൾ</h2>' + (can("item_edit") ? '<button type="button" class="btn sm" data-act="add-item">' + ICON.plus + "പുതിയത്</button>" : "") + '</div><label class="searchbox">' + ICON.search + '<input class="in" data-ui="search" placeholder="തിരയുക…" value="' + h(ui.search) + '"></label>' + catChips() + "</section>" +
       '<section class="card"><div class="list">' + (items.length ? items.map((it) => {
         const out = outQty(it.id), a = availQty(it), w = waitingFor(it.id).length;
-        return '<div class="li wrapli"><div class="av">' + ICON.box + '</div><div class="grow"><div class="t">' + h(it.name) + '</div><div class="s">' + h(it.category || "") + " • " + h(SOURCES[it.source] || "") + (it.source === "donation" && it.donor ? " (" + h(it.donor) + ")" : "") + (it.source === "purchase" && num(it.price) ? " (" + money(it.price) + ")" : "") + '</div><div class="s">ആകെ ' + num(it.qty) + " • ഉപയോഗത്തിൽ " + out + (num(it.damaged) ? " • കേടായത് " + num(it.damaged) : "") + (w ? " • കാത്തിരിക്കുന്നവർ " + w : "") + '</div></div><div class="right">' + (a > 0 ? '<span class="chip">ലഭ്യം ' + a + "</span>" : '<span class="chip rose">ഇല്ല</span>') + '</div><div class="acts-row row">' +
-          '<button type="button" class="btn sm" data-act="lend" data-id="' + h(it.id) + '"' + (a > 0 ? "" : " disabled") + ">" + ICON.hand + "നൽകുക</button><button type=\"button\" class=\"btn sm ghost\" data-act=\"hist\" data-id=\"" + h(it.id) + '">' + ICON.list + "</button>" +
-          (isAdmin() ? '<button type="button" class="btn sm ghost" data-act="edit-item" data-id="' + h(it.id) + '">' + ICON.edit + '</button><button type="button" class="btn sm ghost red" data-act="del-item" data-id="' + h(it.id) + '">' + ICON.trash + "</button>" : "") + "</div></div>";
-      }).join("") : emptyBox("ഉപകരണങ്ങൾ ഇല്ല" + (isAdmin() ? " — 'പുതിയത്' അമർത്തി ചേർക്കുക" : ""))) + "</div></section>";
+        return '<div class="li wrapli"><div class="av">' + ICON.box + '</div><div class="grow"><div class="t">' + h(it.name) + '</div><div class="s">' + h(it.category || "") + " • " + h(SOURCES[it.source] || "") + (it.source === "donation" && it.donor ? " (" + h(it.donor) + ")" : "") + (it.source === "purchase" && num(it.price) ? " (" + money(it.price) + ")" : "") + '</div><div class="s">ആകെ ' + num(it.qty) + " • ഉപയോഗത്തിൽ " + out + (num(it.damaged) ? " • കേടായത് " + num(it.damaged) : "") + (w ? " • കാത്തിരിക്കുന്നവർ " + w : "") + '</div></div><div class="right">' + (a > 0 ? '<span class="chip ok"><i class="mk g"></i>ലഭ്യം ' + a + "</span>" : '<span class="chip rose"><i class="mk r"></i>ഇല്ല</span>') + '</div><div class="acts-row row">' +
+          (can("lend") ? '<button type="button" class="btn sm" data-act="lend" data-id="' + h(it.id) + '"' + (a > 0 ? "" : " disabled") + ">" + ICON.hand + "നൽകുക</button>" : "") + '<button type="button" class="btn sm ghost" data-act="hist" data-id="' + h(it.id) + '">' + ICON.list + "</button>" +
+          (can("item_edit") ? '<button type="button" class="btn sm ghost" data-act="edit-item" data-id="' + h(it.id) + '">' + ICON.edit + "</button>" : "") + (can("item_del") ? '<button type="button" class="btn sm ghost red" data-act="del-item" data-id="' + h(it.id) + '">' + ICON.trash + "</button>" : "") + "</div></div>";
+      }).join("") : emptyBox("ഉപകരണങ്ങൾ ഇല്ല" + (can("item_edit") ? " — 'പുതിയത്' അമർത്തി ചേർക്കുക" : ""))) + "</div></section>";
   }
 
   /* ---------- STAFF: loans ---------- */
@@ -496,15 +527,15 @@
     else arr = arr.filter((l) => l.status === "returned");
     arr = arr.filter((l) => !q || norm(l.borrower + " " + l.phone + " " + l.itemName + " " + (l.place || "")).includes(q)).sort((a, b) => (b.dateOut || "").localeCompare(a.dateOut || "") || newest(a, b));
     const seg = (k, t) => '<button type="button" data-act="loanf" data-k="' + k + '" class="' + (ui.loanF === k ? "on" : "") + '">' + t + "</button>";
-    return '<section class="card stack"><div class="row between"><h2>നൽകിയ ഉപകരണങ്ങൾ</h2><button type="button" class="btn sm" data-act="lend">' + ICON.plus + 'നൽകുക</button></div><div class="seg">' + seg("out", "ഉപയോഗത്തിൽ") + seg("late", "വൈകിയവ") + seg("ret", "തിരിച്ചെടുത്തവ") + '</div><label class="searchbox">' + ICON.search + '<input class="in" data-ui="loanQ" placeholder="പേര് / ഫോൺ / ഉപകരണം" value="' + h(ui.loanQ) + '"></label></section>' +
+    return '<section class="card stack"><div class="row between"><h2>നൽകിയ ഉപകരണങ്ങൾ</h2>' + (can("lend") ? '<button type="button" class="btn sm" data-act="lend">' + ICON.plus + 'നൽകുക</button>' : "") + '</div><div class="seg">' + seg("out", "ഉപയോഗത്തിൽ") + seg("late", "വൈകിയവ") + seg("ret", "തിരിച്ചെടുത്തവ") + '</div><label class="searchbox">' + ICON.search + '<input class="in" data-ui="loanQ" placeholder="പേര് / ഫോൺ / ഉപകരണം" value="' + h(ui.loanQ) + '"></label></section>' +
       '<section class="card"><div class="list">' + (arr.length ? arr.map(loanCard).join("") : emptyBox("ഒന്നും ഇല്ല")) + "</div></section>";
   }
   function loanCard(l) {
     const r = replyOf(l), od = isOverdue(l), w = waitingFor(l.itemId).length, out = l.status === "out";
     return '<div class="li wrapli"><div class="av' + (od ? " late" : "") + '">' + h(initial(l.borrower)) + '</div><div class="grow"><div class="t">' + h(l.borrower) + '</div><div class="s">' + h(l.itemName) + (l.qty > 1 ? " × " + l.qty : "") + (l.phone ? " • " + h(l.phone) : "") + (l.place ? " • " + h(l.place) : "") + '</div><div class="s">എടുത്തത്: ' + h(fmtDate(l.dateOut)) + (l.due ? " • തിരിച്ച്: " + h(fmtDate(l.due)) : "") + (!out && l.dateIn ? " • തിരിച്ചെടുത്തത്: " + h(fmtDate(l.dateIn)) : "") + "</div>" + (l.note ? '<div class="s">' + h(l.note) + "</div>" : "") +
       (r ? '<div class="reply-box">' + ICON.msg + "<b>" + h(ANSWERS[r.answer] || r.answer) + "</b>" + (r.when ? " • " + h(fmtDate(r.when)) : "") + (r.msg ? " — " + h(r.msg) : "") + "</div>" : "") + '</div><div class="right">' + (out ? (od ? '<span class="chip rose">വൈകി</span>' : '<span class="chip blue">ഉപയോഗത്തിൽ</span>') + (w ? '<span class="chip amber">' + w + " പേർ കാത്തിരിക്കുന്നു</span>" : "") : '<span class="chip">തിരിച്ചെടുത്തു</span>') + "</div>" +
-      '<div class="acts-row row">' + telBtn(l.phone) + (out ? '<button type="button" class="btn sm" data-act="return" data-id="' + h(l.id) + '">' + ICON.undo + 'തിരിച്ചെടുക്കുക</button><button type="button" class="btn sm ghost wa" data-act="remind" data-id="' + h(l.id) + '">' + ICON.bell + "ഉണർത്തുക</button>" + '<button type="button" class="btn sm ghost" data-act="rec-reply" data-id="' + h(l.id) + '">' + ICON.msg + "</button>" : "") +
-      '<button type="button" class="btn sm ghost" data-act="edit-loan" data-id="' + h(l.id) + '">' + ICON.edit + "</button>" + (isAdmin() ? '<button type="button" class="btn sm ghost red" data-act="del-loan" data-id="' + h(l.id) + '">' + ICON.trash + "</button>" : "") + "</div></div>";
+      '<div class="acts-row row">' + telBtn(l.phone) + (out ? (can("lend") ? '<button type="button" class="btn sm" data-act="return" data-id="' + h(l.id) + '">' + ICON.undo + "തിരിച്ചെടുക്കുക</button>" : "") + (can("remind") ? '<button type="button" class="btn sm ghost wa" data-act="remind" data-id="' + h(l.id) + '">' + ICON.bell + "ഉണർത്തുക</button>" + '<button type="button" class="btn sm ghost" data-act="rec-reply" data-id="' + h(l.id) + '">' + ICON.msg + "</button>" : "") : "") +
+      (can("loan_edit") ? '<button type="button" class="btn sm ghost" data-act="edit-loan" data-id="' + h(l.id) + '">' + ICON.edit + "</button>" : "") + (can("loan_edit") ? '<button type="button" class="btn sm ghost red" data-act="del-loan" data-id="' + h(l.id) + '">' + ICON.trash + "</button>" : "") + "</div></div>";
   }
 
   /* ---------- STAFF: requests ---------- */
@@ -526,17 +557,38 @@
   async function getSnapshots() { try { return (await withTimeout(idbGet("snapshots"), 3000)) || []; } catch (e) { return []; } }
   function moreView() {
     const b = INFO(); let o = "";
+    const hd = (t, sub, btn) => '<div class="row between pad-s"><div><h2>' + t + "</h2>" + (sub ? '<div class="muted">' + sub + "</div>" : "") + "</div>" + (btn || "") + "</div>";
+    const eb = (act, id, ic, cls) => '<button type="button" class="btn sm ghost ' + (cls || "") + '" data-act="' + act + '" data-id="' + h(id) + '">' + ic + "</button>";
     if (isAdmin()) {
-      o += (ST().adminHash === pinHash("1234") ? '<div class="banner red">⚠️ ഡിഫോൾട്ട് പിൻ (1234) ഇപ്പോഴും ഉപയോഗത്തിലുണ്ട്. ഉടൻ മാറ്റുക.</div>' : "") +
-        '<section class="card"><div class="row between pad-s"><div><h2>അറിയിപ്പുകൾ</h2><div class="muted">പൊതു പേജിൽ എല്ലാവർക്കും കാണും</div></div><button type="button" class="btn sm" data-act="add-ann">' + ICON.plus + "പുതിയത്</button></div><div class=\"list\">" +
-        (live("announcements").length ? live("announcements").sort((a, c) => (c.at || 0) - (a.at || 0)).map((a) => '<div class="li wrapli"><div class="grow"><div class="t">' + (a.pinned ? "📌 " : "") + h(a.title) + '</div><div class="s">' + h(a.text) + '</div></div><div class="acts-row row"><button type="button" class="btn sm ghost" data-act="edit-ann" data-id="' + h(a.id) + '">' + ICON.edit + '</button><button type="button" class="btn sm ghost red" data-act="del-ann" data-id="' + h(a.id) + '">' + ICON.trash + "</button></div></div>").join("") : emptyBox("അറിയിപ്പുകൾ ഇല്ല")) + "</div></section>" +
-        '<section class="card stack"><h2>ഓഫീസ് വിവരങ്ങൾ</h2><label class="f">പേര്<input id="b_name" class="in" value="' + h(b.name) + '"></label><label class="f">ടാഗ്‌ലൈൻ<input id="b_tag" class="in" value="' + h(b.tag) + '"></label><div class="g2"><label class="f">സ്ഥലം<input id="b_place" class="in" value="' + h(b.place) + '"></label><label class="f">ഫോൺ<input id="b_phone" class="in" inputmode="tel" value="' + h(b.phone) + '"></label></div><label class="f">WhatsApp നമ്പർ<input id="b_wa" class="in" inputmode="tel" value="' + h(b.wa) + '"></label><label class="f">പ്രവർത്തന സമയം<input id="b_hours" class="in" value="' + h(b.hours) + '" placeholder="ഉദാ: രാവിലെ 9 – വൈകിട്ട് 5"></label><label class="f">വിവരണം<textarea id="b_about" class="ta" rows="3">' + h(b.about) + '</textarea></label><button type="button" class="btn" data-act="save-info">സേവ്</button></section>' +
-        '<section class="card"><div class="row between pad-s"><div><h2>സ്റ്റാഫ്</h2><div class="muted">ഓരോരുത്തർക്കും സ്വന്തം 4 അക്ക പിൻ</div></div><button type="button" class="btn sm" data-act="add-staff">' + ICON.plus + 'പുതിയത്</button></div><div class="list">' +
-        (live("staff").length ? live("staff").sort(byName).map((p) => '<div class="li"><div class="av">' + h(initial(p.name)) + '</div><div class="grow"><div class="t">' + h(p.name) + '</div></div><button type="button" class="btn sm ghost" data-act="edit-staff" data-id="' + h(p.id) + '">' + ICON.edit + '</button><button type="button" class="btn sm ghost red" data-act="del-staff" data-id="' + h(p.id) + '">' + ICON.trash + "</button></div>").join("") : emptyBox("സ്റ്റാഫ് ഇല്ല")) + "</div></section>" +
-        '<section class="card stack"><h2>അഡ്മിൻ പിൻ</h2><label class="f">പുതിയ പിൻ (4 അക്കം)<input id="a_pin" class="in" inputmode="numeric" maxlength="4" autocomplete="off"></label><button type="button" class="btn" data-act="save-pin">പിൻ മാറ്റുക</button></section>';
+      o += (ST().adminHash === pinHash("1234") ? '<div class="banner red">⚠️ ഡിഫോൾട്ട് അഡ്മിൻ കോഡ് (1234) ഇപ്പോഴും ഉപയോഗത്തിലുണ്ട്. ഉടൻ മാറ്റുക.</div>' : "") + (ST().entryCode === "1000" ? '<div class="banner red">⚠️ പൊതു എൻട്രി കോഡ് ഡിഫോൾട്ട് (1000) ആണ്. നിങ്ങളുടെ കോഡ് നൽകുക.</div>' : "");
     }
-    o += '<section class="card stack"><h2>റിപ്പോർട്ട്</h2><div class="muted">സ്റ്റോക്ക്, നൽകിയവരുടെ പട്ടിക എന്നിവ PDF ആയി</div><div class="row wrap"><button type="button" class="btn" data-act="stock-pdf">' + ICON.file + 'സ്റ്റോക്ക് PDF</button><button type="button" class="btn ghost" data-act="stock-wa">' + ICON.msg + "WhatsApp</button></div></section>" +
-      '<section class="card stack"><h2>ബാക്കപ്പ് & സിങ്ക്</h2><div class="banner green" id="syncBanner">' + h(statusText()[1]) + (state.lastSync ? " • അവസാന സിങ്ക്: " + new Date(state.lastSync).toLocaleString("en-IN") : "") + '</div><div class="muted">ഡാറ്റ ബേസ്: ' + h(dbBase() || "സജ്ജമാക്കിയിട്ടില്ല") + '</div><div class="row wrap"><button type="button" class="btn" data-act="sync-now">' + ICON.refresh + 'സിങ്ക്</button><button type="button" class="btn ghost" data-act="snapshot">ഫോൺ ബാക്കപ്പ്</button><button type="button" class="btn ghost" data-act="export">' + ICON.download + "JSON</button>" +
+    if (can("ann")) {
+      const arr = live("announcements").sort((a, c) => (c.at || 0) - (a.at || 0));
+      o += '<section class="card">' + hd("അറിയിപ്പുകൾ", "ജോയിൻ ചെയ്ത എല്ലാവർക്കും കാണും", '<button type="button" class="btn sm" data-act="add-ann">' + ICON.plus + "പുതിയത്</button>") + '<div class="list">' +
+        (arr.length ? arr.map((a) => '<div class="li wrapli"><div class="grow"><div class="t">' + (a.pinned ? "📌 " : "") + h(a.title) + '</div><div class="s">' + h(a.text) + '</div></div><div class="acts-row row">' + eb("edit-ann", a.id, ICON.edit) + eb("del-ann", a.id, ICON.trash, "red") + "</div></div>").join("") : emptyBox("അറിയിപ്പുകൾ ഇല്ല")) + "</div></section>";
+    }
+    if (can("services")) {
+      const arr = live("services").sort((a, c) => (a.order || 0) - (c.order || 0) || (a.at || 0) - (c.at || 0));
+      o += '<section class="card">' + hd("പ്രവർത്തനങ്ങൾ", "സ്വാന്തന കേന്ദ്രത്തിന് കീഴിലെ പ്രവർത്തനങ്ങൾ — എല്ലാവർക്കും കാണും", '<button type="button" class="btn sm" data-act="add-svc">' + ICON.plus + "പുതിയത്</button>") + '<div class="list">' +
+        (arr.length ? arr.map((x) => '<div class="li wrapli"><div class="grow"><div class="t">' + h(x.title) + '</div><div class="s">' + h(x.text) + '</div></div><div class="acts-row row">' + eb("edit-svc", x.id, ICON.edit) + eb("del-svc", x.id, ICON.trash, "red") + "</div></div>").join("") : emptyBox("പ്രവർത്തനങ്ങൾ ചേർത്തിട്ടില്ല")) + "</div></section>";
+    }
+    if (can("members")) {
+      const arr = live("members").sort((a, c) => (c.at || 0) - (a.at || 0));
+      o += '<section class="card">' + hd("ജോയിൻ ചെയ്തവർ (" + arr.length + ")", "പേര്, ഫോൺ, സ്ഥലം നൽകി ചേർന്നവർ") + '<div class="list">' +
+        (arr.length ? arr.map((m) => '<div class="li wrapli"><div class="av">' + h(initial(m.name)) + '</div><div class="grow"><div class="t">' + h(m.name) + '</div><div class="s">' + h(m.phone) + " • " + h(m.place) + " • " + h(fmtDate(isoOf(new Date(m.at || Date.now())))) + '</div></div><div class="acts-row row">' + telBtn(m.phone) + waBtn(m.phone) + (isAdmin() ? eb("del-member", m.id, ICON.trash, "red") : "") + "</div></div>").join("") : emptyBox("ആരും ജോയിൻ ചെയ്തിട്ടില്ല")) + "</div></section>";
+    }
+    if (isAdmin()) {
+      o += '<section class="card stack"><h2>ഓഫീസ് വിവരങ്ങൾ</h2><label class="f">പേര്<input id="b_name" class="in" value="' + h(b.name) + '"></label><label class="f">ടാഗ്‌ലൈൻ<input id="b_tag" class="in" value="' + h(b.tag) + '"></label><div class="g2"><label class="f">സ്ഥലം<input id="b_place" class="in" value="' + h(b.place) + '"></label><label class="f">ഫോൺ<input id="b_phone" class="in" inputmode="tel" value="' + h(b.phone) + '"></label></div><label class="f">WhatsApp നമ്പർ<input id="b_wa" class="in" inputmode="tel" value="' + h(b.wa) + '"></label><label class="f">പ്രവർത്തന സമയം<input id="b_hours" class="in" value="' + h(b.hours) + '" placeholder="ഉദാ: രാവിലെ 9 – വൈകിട്ട് 5"></label><label class="f">വിവരണം<textarea id="b_about" class="ta" rows="3">' + h(b.about) + '</textarea></label><button type="button" class="btn" data-act="save-info">സേവ്</button></section>' +
+        '<section class="card">' + hd("സ്റ്റാഫ്", "ഓരോരുത്തർക്കും സ്വന്തം കോഡും അനുമതികളും", '<button type="button" class="btn sm" data-act="add-staff">' + ICON.plus + "പുതിയത്</button>") + '<div class="list">' +
+        (live("staff").length ? live("staff").sort(byName).map((p) => '<div class="li"><div class="av">' + h(initial(p.name)) + '</div><div class="grow"><div class="t">' + h(p.name) + '</div><div class="s">' + PERMS.filter((x) => (p.perms && x[0] in p.perms ? p.perms[x[0]] : x[2])).length + " / " + PERMS.length + " അനുമതികൾ</div></div>" + eb("edit-staff", p.id, ICON.edit) + eb("del-staff", p.id, ICON.trash, "red") + "</div>").join("") : emptyBox("സ്റ്റാഫ് ഇല്ല")) + "</div></section>" +
+        '<section class="card stack"><h2>കോഡുകൾ</h2><label class="f">പൊതു എൻട്രി കോഡ് (എല്ലാവർക്കും നൽകാം)<input id="a_entry" class="in" autocomplete="off" maxlength="12" value="' + h(ST().entryCode || "") + '"></label><button type="button" class="btn" data-act="save-entry">എൻട്രി കോഡ് സേവ് ചെയ്യുക</button>' +
+        '<label class="f" style="margin-top:8px">പുതിയ അഡ്മിൻ കോഡ് (4–12 അക്ഷരം/അക്കം)<input id="a_pin" class="in" autocomplete="off" maxlength="12"></label><button type="button" class="btn ghost" data-act="save-pin">അഡ്മിൻ കോഡ് മാറ്റുക</button></section>';
+    }
+    if (can("reports")) {
+      o += '<section class="card stack"><h2>റിപ്പോർട്ട്</h2><div class="muted">മാസാവസാനം ആരൊക്കെ, ഏതൊക്കെ ഉപകരണങ്ങൾ കൊണ്ടുപോയി എന്ന PDF (പ്രിന്റ് ചെയ്യാം)</div><label class="f">മാസം<input id="rp_month" type="month" class="in" value="' + h(ui.month) + '"></label><div class="row wrap"><button type="button" class="btn" data-act="month-pdf">' + ICON.file + 'മാസ റിപ്പോർട്ട് PDF</button><button type="button" class="btn ghost" data-act="month-wa">' + ICON.msg + 'WhatsApp</button></div>' +
+        '<div class="muted" style="margin-top:6px">സ്റ്റോക്ക് ലിസ്റ്റ്</div><div class="row wrap"><button type="button" class="btn ghost" data-act="stock-pdf">' + ICON.file + 'സ്റ്റോക്ക് PDF</button><button type="button" class="btn ghost" data-act="stock-wa">' + ICON.msg + "WhatsApp</button></div></section>";
+    }
+    o += '<section class="card stack"><h2>ബാക്കപ്പ് & സിങ്ക്</h2><div class="banner green" id="syncBanner">' + h(statusText()[1]) + (state.lastSync ? " • അവസാന സിങ്ക്: " + new Date(state.lastSync).toLocaleString("en-IN") : "") + '</div><div class="muted">ഡാറ്റ ബേസ്: ' + h(dbBase() || "സജ്ജമാക്കിയിട്ടില്ല") + '</div><div class="row wrap"><button type="button" class="btn" data-act="sync-now">' + ICON.refresh + 'സിങ്ക്</button><button type="button" class="btn ghost" data-act="snapshot">' + ICON.download + 'ഫോൺ ബാക്കപ്പ്</button><button type="button" class="btn ghost" data-act="export">' + ICON.file + 'JSON</button>' +
       (isAdmin() ? '<label class="btn ghost" style="cursor:pointer">' + ICON.upload + 'റീസ്റ്റോർ<input type="file" accept=".json,application/json" data-ch="restore-file" hidden></label><button type="button" class="btn ghost" data-act="db-url">Firebase വിലാസം</button>' : "") + '</div><div id="snapList" class="stack"><div class="muted">ലോഡ് ചെയ്യുന്നു…</div></div></section>';
     getSnapshots().then((arr) => { snapCache = arr; const el = $("#snapList"); if (el) el.innerHTML = arr.length ? arr.map((x) => '<div class="li" style="border:1px solid var(--line);border-radius:13px"><div class="grow"><div class="t">' + h(x.label) + '</div><div class="s">' + h(x.ts) + "</div></div>" + (isAdmin() ? '<button type="button" class="btn sm ghost" data-act="restore-snap" data-id="' + h(x.id) + '">Restore</button>' : "") + "</div>").join("") : '<div class="muted">ഫോൺ ബാക്കപ്പുകൾ ഇല്ല</div>'; });
     return o;
@@ -720,13 +772,31 @@
     const items = live("items").sort(byName), loans = activeLoans();
     const doc = new PdfDoc("ഉപകരണ സ്റ്റോക്ക് റിപ്പോർട്ട്", fmtDate(todayIso()));
     const total = sumArr(items, (i) => i.qty), out = sumArr(loans, (l) => l.qty), dmg = sumArr(items, (i) => i.damaged);
-    doc.kpis([{ label: "ആകെ ഉപകരണങ്ങൾ", value: String(total) }, { label: "ഉപയോഗത്തിൽ", value: String(out), bg: "#eff6ff", color: "#1d4ed8" }, { label: "ലഭ്യം", value: String(Math.max(0, total - out - dmg)), bg: "#fffbeb", color: "#b45309" }]);
+    doc.kpis([{ label: "ആകെ ഉപകരണങ്ങൾ", value: String(total) }, { label: "ഉപയോഗത്തിൽ", value: String(out), bg: "#f0fdfa", color: "#0f766e" }, { label: "ലഭ്യം", value: String(Math.max(0, total - out - dmg)), bg: "#fffbeb", color: "#b45309" }]);
     doc.heading("സ്റ്റോക്ക്");
     doc.table([{ label: "ഉപകരണം", w: 0.38 }, { label: "ആകെ", w: 0.14, align: "right" }, { label: "ഉപയോഗത്തിൽ", w: 0.2, align: "right" }, { label: "കേടായത്", w: 0.14, align: "right" }, { label: "ലഭ്യം", w: 0.14, align: "right", bold: true, color: "#0f766e" }],
       items.length ? items.map((i) => ({ cells: [i.name, String(num(i.qty)), String(outQty(i.id)), String(num(i.damaged)), String(availQty(i))] })) : [{ cells: ["ഉപകരണങ്ങൾ ഇല്ല", "", "", "", ""] }]);
     doc.heading("ഇപ്പോൾ ഉപയോഗത്തിലുള്ളവ");
     doc.table([{ label: "പേര്", w: 0.27 }, { label: "ഫോൺ", w: 0.22 }, { label: "ഉപകരണം", w: 0.3 }, { label: "എടുത്തത്", w: 0.21, align: "right" }],
       loans.length ? loans.sort((a, b) => (a.dateOut || "").localeCompare(b.dateOut || "")).map((l) => ({ hot: isOverdue(l), cells: [l.borrower, l.phone || "-", l.itemName + (l.qty > 1 ? " ×" + l.qty : ""), fmtDate(l.dateOut)] })) : [{ cells: ["ആരും ഇല്ല", "", "", ""] }]);
+    return pdfFromCanvases(doc.finish());
+  }
+  const shortDate = (iso) => (iso ? iso.slice(8, 10) + "/" + iso.slice(5, 7) + "/" + iso.slice(2, 4) : "-");
+  const monthLoans = (m) => live("loans").filter((l) => (l.dateOut || "").startsWith(m)).sort((a, b) => (a.dateOut || "").localeCompare(b.dateOut || "") || (a.createdAt || 0) - (b.createdAt || 0));
+  async function buildMonthPdf(m) {
+    await ensureFonts();
+    const arr = monthLoans(m), still = arr.filter((l) => l.status === "out");
+    const returned = live("loans").filter((l) => l.status === "returned" && (l.dateIn || "").startsWith(m));
+    const doc = new PdfDoc(INFO().name + " — പ്രതിമാസ റിപ്പോർട്ട്", fmtMonth(m));
+    doc.kpis([{ label: "ഈ മാസം നൽകിയത്", value: String(arr.length) + " പേർ" }, { label: "ഉപകരണങ്ങൾ", value: String(sumArr(arr, (l) => l.qty)) + " എണ്ണം", bg: "#f0fdfa", color: "#0f766e" }, { label: "തിരിച്ചെടുത്തത്", value: String(returned.length), bg: "#fffbeb", color: "#b45309" }]);
+    doc.heading("ഈ മാസം കൊണ്ടുപോയവർ");
+    doc.table([{ label: "#", w: 0.05 }, { label: "തീയതി", w: 0.12 }, { label: "പേര്", w: 0.19 }, { label: "ഫോൺ", w: 0.17 }, { label: "സ്ഥലം", w: 0.13 }, { label: "ഉപകരണം", w: 0.2 }, { label: "തിരിച്ച്", w: 0.14, align: "right" }],
+      arr.length ? arr.map((l, i) => ({ hot: l.status === "out" && isOverdue(l), cells: [String(i + 1), shortDate(l.dateOut), l.borrower, l.phone || "-", l.place || "-", l.itemName + (l.qty > 1 ? " ×" + l.qty : ""), l.status === "out" ? "പുറത്ത്" : shortDate(l.dateIn)] })) : [{ cells: ["", "", "ഈ മാസം ആരും എടുത്തിട്ടില്ല", "", "", "", ""] }]);
+    const by = {}; arr.forEach((l) => { const o = by[l.itemName] || (by[l.itemName] = { n: l.itemName, times: 0, qty: 0 }); o.times++; o.qty += num(l.qty); });
+    const sum = Object.values(by).sort((a, b) => b.qty - a.qty);
+    doc.heading("ഉപകരണം തിരിച്ച്");
+    doc.table([{ label: "ഉപകരണം", w: 0.56 }, { label: "ആളുകൾ", w: 0.2, align: "right" }, { label: "എണ്ണം", w: 0.24, align: "right", bold: true, color: "#0f766e" }], sum.length ? sum.map((x) => ({ cells: [x.n, String(x.times), String(x.qty)] })) : [{ cells: ["-", "", ""] }]);
+    if (still.length) { doc.heading("ഇപ്പോഴും തിരിച്ചെത്താത്തവ"); doc.table([{ label: "പേര്", w: 0.3 }, { label: "ഫോൺ", w: 0.25 }, { label: "ഉപകരണം", w: 0.3 }, { label: "എടുത്തത്", w: 0.15, align: "right" }], still.map((l) => ({ cells: [l.borrower, l.phone || "-", l.itemName + (l.qty > 1 ? " ×" + l.qty : ""), shortDate(l.dateOut)] }))); }
     return pdfFromCanvases(doc.finish());
   }
   const sumArr = (arr, f) => arr.reduce((a, x) => a + num(f(x)), 0);
@@ -737,7 +807,7 @@
   function itemModal(rec) {
     openModal({
       title: rec ? "ഉപകരണം എഡിറ്റ്" : "പുതിയ ഉപകരണം",
-      body: '<label class="f">പേര്<input id="mf_name" class="in" value="' + h(rec ? rec.name : "") + '" placeholder="ഉദാ: വീൽചെയർ (ഫോൾഡിങ്)"></label><label class="f">വിഭാഗം<select id="mf_cat" class="sel">' + CATEGORIES.map((c) => opt(c, c, (rec ? rec.category : "") === c)).join("") + "</select></label>" +
+      body: '<label class="f">പേര്<input id="mf_name" class="in" value="' + h(rec ? rec.name : "") + '" placeholder="ഉദാ: വീൽചെയർ (ഫോൾഡിങ്)"></label><label class="f">വിഭാഗം (പുതിയത് ടൈപ്പ് ചെയ്യാം)<input id="mf_cat" class="in" list="catList" value="' + h(rec ? rec.category : CATEGORIES[0]) + '"><datalist id="catList">' + Array.from(new Set(CATEGORIES.concat(live("items").map((i) => i.category).filter(Boolean)))).map((c) => '<option value="' + h(c) + '">').join("") + "</datalist></label>" +
         '<div class="g2"><label class="f">ആകെ എണ്ണം<input id="mf_qty" class="in" type="number" min="1" step="1" inputmode="numeric" value="' + (rec ? num(rec.qty) : 1) + '"></label><label class="f">കേടായത് (ഉപയോഗിക്കാൻ കഴിയാത്തത്)<input id="mf_dmg" class="in" type="number" min="0" step="1" inputmode="numeric" value="' + (rec ? num(rec.damaged) : 0) + '"></label></div>' +
         '<label class="f">ലഭിച്ച വിധം<select id="mf_src" class="sel">' + Object.keys(SOURCES).map((k) => opt(k, SOURCES[k], (rec ? rec.source : "donation") === k)).join("") + '</select></label><div class="g2"><label class="f">ദാതാവ് (ഓപ്ഷണൽ)<input id="mf_donor" class="in" value="' + h(rec ? rec.donor : "") + '"></label><label class="f">വില ₹ (വാങ്ങിയതെങ്കിൽ)<input id="mf_price" class="in" type="number" step="any" inputmode="decimal" value="' + (rec && num(rec.price) ? num(rec.price) : "") + '"></label></div>' +
         '<label class="f">കുറിപ്പ് (പൊതുജനങ്ങൾക്ക് കാണാം)<input id="mf_note" class="in" value="' + h(rec ? rec.note : "") + '" placeholder="ഉദാ: മുതിർന്നവർക്ക്, ഫോൾഡിങ്"></label>',
@@ -747,7 +817,7 @@
         if (qty < 1) return modalErr("എണ്ണം 1-ൽ കുറയരുത്.");
         if (dmg < 0 || dmg > qty) return modalErr("കേടായ എണ്ണം ആകെ എണ്ണത്തിൽ കൂടരുത്.");
         if (rec && qty - dmg < outQty(rec.id)) return modalErr("ഇപ്പോൾ " + outQty(rec.id) + " എണ്ണം ഉപയോഗത്തിലാണ്. അതിൽ കുറയ്ക്കാൻ കഴിയില്ല.");
-        const r = Object.assign(rec ? {} : { id: uid("it"), deleted: false, createdAt: Date.now(), addedDate: todayIso() }, rec || {}, { name, category: mv("cat"), qty, damaged: dmg, source: mv("src"), donor: clean(mv("donor")), price: r2(num(mv("price"))), note: clean(mv("note")) });
+        const r = Object.assign(rec ? {} : { id: uid("it"), deleted: false, createdAt: Date.now(), addedDate: todayIso() }, rec || {}, { name, category: clean(mv("cat")) || "മറ്റുള്ളവ", qty, damaged: dmg, source: mv("src"), donor: clean(mv("donor")), price: r2(num(mv("price"))), note: clean(mv("note")) });
         r.avail = Math.max(0, qty - dmg - (rec ? outQty(rec.id) : 0));
         save("items", r); toast("✅ സേവ് ചെയ്തു"); render();
       }
@@ -810,7 +880,7 @@
       title: staffAdd ? "അപേക്ഷ ചേർക്കുക" : "ഉപകരണത്തിന് അപേക്ഷിക്കുക",
       body: (it ? '<div class="banner green">' + h(it.name) + (shownAvail(it) > 0 ? " — ലഭ്യം" : " — ഇപ്പോൾ ലഭ്യമല്ല (ലഭ്യമാകുമ്പോൾ അറിയിക്കും)") + "</div>" :
         (staffAdd ? '<label class="f">ഉപകരണം<select id="mf_item" class="sel"><option value="">— ലിസ്റ്റിൽ ഇല്ല —</option>' + live("items").sort(byName).map((i) => opt(i.id, i.name, false)).join("") + '</select></label>' : "") + '<label class="f">' + (staffAdd ? "ലിസ്റ്റിൽ ഇല്ലെങ്കിൽ ഉപകരണത്തിന്റെ പേര്" : "ഏത് ഉപകരണം വേണം?") + '<input id="mf_text" class="in" placeholder="ഉദാ: വാട്ടർ ബെഡ്"></label>') +
-        '<label class="f">അപേക്ഷകന്റെ പേര്<input id="mf_name" class="in" autocomplete="name"></label><div class="g2"><label class="f">മൊബൈൽ നമ്പർ<input id="mf_phone" class="in" inputmode="tel" autocomplete="tel"></label><label class="f">സ്ഥലം<input id="mf_place" class="in"></label></div>' +
+        '<label class="f">അപേക്ഷകന്റെ പേര്<input id="mf_name" class="in" autocomplete="name" value="' + h(!staffAdd && state.me ? state.me.name : "") + '"></label><div class="g2"><label class="f">മൊബൈൽ നമ്പർ<input id="mf_phone" class="in" inputmode="tel" autocomplete="tel" value="' + h(!staffAdd && state.me ? state.me.phone : "") + '"></label><label class="f">സ്ഥലം<input id="mf_place" class="in" value="' + h(!staffAdd && state.me ? state.me.place : "") + '"></label></div>' +
         '<div class="g2"><label class="f">എണ്ണം<input id="mf_qty" class="in" type="number" min="1" step="1" inputmode="numeric" value="1"></label><label class="f">എപ്പോൾ വേണം<input id="mf_when" class="in" type="date" value="' + todayIso() + '"></label></div><label class="f">ആർക്ക് / എന്തിന് (ഹ്രസ്വമായി)<input id="mf_need" class="in" maxlength="200" placeholder="ഉദാ: ഉമ്മയ്ക്ക് ശസ്ത്രക്രിയ കഴിഞ്ഞു, നടക്കാൻ പ്രയാസം"></label>',
       ok: staffAdd ? "ചേർക്കുക" : "അപേക്ഷ അയക്കുക",
       onOk() {
@@ -863,15 +933,28 @@
     });
   }
   function staffModal(rec) {
+    const cur = (k, d) => (rec && rec.perms && k in rec.perms ? !!rec.perms[k] : !!d);
     openModal({
       title: rec ? "സ്റ്റാഫ് എഡിറ്റ്" : "പുതിയ സ്റ്റാഫ്",
-      body: '<label class="f">പേര്<input id="mf_name" class="in" value="' + h(rec ? rec.name : "") + '"></label><label class="f">4 അക്ക പിൻ' + (rec ? " (മാറ്റാൻ മാത്രം)" : "") + '<input id="mf_pin" class="in" inputmode="numeric" maxlength="4" autocomplete="off"></label>',
+      body: '<label class="f">പേര്<input id="mf_name" class="in" value="' + h(rec ? rec.name : "") + '"></label><label class="f">കോഡ് (4–12 അക്ഷരം/അക്കം)' + (rec ? " — മാറ്റാൻ മാത്രം നൽകുക" : "") + '<input id="mf_pin" class="in" autocomplete="off" maxlength="12"></label>' +
+        '<div class="permbox"><b>ചെയ്യാൻ അനുവദിക്കുന്നവ</b>' + PERMS.map((p) => '<label class="chk"><input type="checkbox" id="pm_' + p[0] + '"' + (cur(p[0], p[2]) ? " checked" : "") + "><span>" + h(p[1]) + "</span></label>").join("") + "</div>",
       onOk() {
         const name = clean(mv("name")); if (!name) return modalErr("പേര് നൽകുക.");
-        const p = clean(mv("pin")); if (!rec && !/^\d{4}$/.test(p)) return modalErr("4 അക്ക പിൻ നൽകുക."); if (p && !/^\d{4}$/.test(p)) return modalErr("പിൻ 4 അക്ക നമ്പർ ആയിരിക്കണം.");
+        const p = codeKey(mv("pin")); if (!rec && !validCode(p)) return modalErr("4–12 അക്ഷരം/അക്കമുള്ള കോഡ് നൽകുക."); if (p && !validCode(p)) return modalErr("കോഡ് 4–12 അക്ഷരം/അക്കം (ഇംഗ്ലീഷ് അക്ഷരം, സംഖ്യ) മാത്രം ആകണം.");
         const hs = p ? pinHash(p) : rec.pinHash;
-        if (hs === ST().adminHash || live("staff").some((x) => x.id !== (rec && rec.id) && x.pinHash === hs)) return modalErr("ഈ പിൻ ഉപയോഗത്തിലുണ്ട്. മറ്റൊന്ന് നൽകുക.");
-        save("staff", Object.assign(rec ? {} : { id: uid("st"), deleted: false }, rec || {}, { name, pinHash: hs })); toast("✅ സേവ് ചെയ്തു"); render();
+        if (hs === ST().adminHash || (p && p === codeKey(ST().entryCode)) || live("staff").some((x) => x.id !== (rec && rec.id) && x.pinHash === hs)) return modalErr("ഈ കോഡ് ഉപയോഗത്തിലുണ്ട്. മറ്റൊന്ന് നൽകുക.");
+        const perms = {}; PERMS.forEach((x) => { perms[x[0]] = !!($("#pm_" + x[0]) && $("#pm_" + x[0]).checked); });
+        save("staff", Object.assign(rec ? {} : { id: uid("st"), deleted: false }, rec || {}, { name, pinHash: hs, perms })); toast("✅ സേവ് ചെയ്തു"); render();
+      }
+    });
+  }
+  function svcModal(rec) {
+    openModal({
+      title: rec ? "പ്രവർത്തനം എഡിറ്റ്" : "പുതിയ പ്രവർത്തനം", text: "ഇത് ജോയിൻ ചെയ്ത എല്ലാവർക്കും കാണും.",
+      body: '<label class="f">പ്രവർത്തനം<input id="mf_title" class="in" maxlength="80" value="' + h(rec ? rec.title : "") + '" placeholder="ഉദാ: വീൽചെയർ വായ്പ"></label><label class="f">വിവരണം<textarea id="mf_text" class="ta" rows="3" maxlength="400">' + h(rec ? rec.text : "") + "</textarea></label>",
+      onOk() {
+        const title = clean(mv("title")); if (!title) return modalErr("പ്രവർത്തനത്തിന്റെ പേര് നൽകുക.");
+        save("services", Object.assign(rec ? {} : { id: uid("sv"), deleted: false, at: Date.now() }, rec || {}, { title, text: String(mv("text") || "").trim() })); toast("✅ സേവ് ചെയ്തു"); render();
       }
     });
   }
@@ -904,11 +987,9 @@
   function sendAsk(l) { l.askedAt = Date.now(); save("loans", l); openWa(l.phone, askText(l)); }
 
   const actions = {
-    pin(el) { if (pin.length >= 4) return; pin += el.dataset.k; updateDots(); pinMsg(""); if (pin.length === 4) verifyPin(); },
-    "pin-back"() { pin = pin.slice(0, -1); updateDots(); },
-    "pin-clear"() { pin = ""; updateDots(); pinMsg(""); },
-    "to-login"() { ui.login = true; pin = ""; render(); },
-    "login-cancel"() { ui.login = false; pin = ""; render(); },
+    enter, join,
+    "to-gate"() { ui.gate = true; render(); },
+    "gate-back"() { ui.gate = false; render(); },
     logout,
     theme() { state.theme = state.theme === "dark" ? "light" : "dark"; applyTheme(); persist(); render(); },
     install: async function () { if (installPrompt) { installPrompt.prompt(); try { await installPrompt.userChoice; } catch (e) { /* ignore */ } installPrompt = null; } else toast("ബ്രൗസർ മെനുവിലെ 'Install app' / 'Add to Home Screen' ഉപയോഗിക്കുക."); },
@@ -924,38 +1005,54 @@
     "cancel-req"(el) { const r = state.data.requests[el.dataset.id]; if (!r) return; confirmBox("അപേക്ഷ റദ്ദാക്കണോ?", r.itemName, "റദ്ദാക്കുക", () => { r.status = "cancelled"; save("requests", r); toast("റദ്ദാക്കി", "warn"); render(); }); },
 
     /* items */
-    "add-item"() { if (isAdmin()) itemModal(); },
-    "edit-item"(el) { const r = byId("items", el.dataset.id); if (r && isAdmin()) itemModal(r); },
-    "del-item"(el) { const r = byId("items", el.dataset.id); if (!r || !isAdmin()) return; if (outQty(r.id)) return toast("ഇത് ഇപ്പോൾ ഉപയോഗത്തിലാണ്; ആദ്യം തിരിച്ചെടുക്കുക", "error"); delConfirm("ഉപകരണം നീക്കം ചെയ്യണോ?", r.name, () => softDelete("items", r.id)); },
+    "add-item"() { if (need("item_edit")) itemModal(); },
+    "edit-item"(el) { const r = byId("items", el.dataset.id); if (r && need("item_edit")) itemModal(r); },
+    "del-item"(el) { const r = byId("items", el.dataset.id); if (!r || !need("item_del")) return; if (outQty(r.id)) return toast("ഇത് ഇപ്പോൾ ഉപയോഗത്തിലാണ്; ആദ്യം തിരിച്ചെടുക്കുക", "error"); delConfirm("ഉപകരണം നീക്കം ചെയ്യണോ?", r.name, () => softDelete("items", r.id)); },
     hist(el) { const r = byId("items", el.dataset.id); if (r) histModal(r); },
 
     /* loans */
-    lend(el) { lendModal({ itemId: el.dataset.id || "" }); },
-    "edit-loan"(el) { const l = byId("loans", el.dataset.id); if (l) lendModal({ loan: l }); },
-    return(el) { const l = byId("loans", el.dataset.id); if (l && l.status === "out") returnModal(l); },
-    "del-loan"(el) { const l = byId("loans", el.dataset.id); if (!l || !isAdmin()) return; delConfirm("എൻട്രി നീക്കം ചെയ്യണോ?", l.borrower + " — " + l.itemName, () => { softDelete("loans", l.id); updateAvail(l.itemId); }); },
-    remind(el) { const l = byId("loans", el.dataset.id); if (l) sendAsk(l); },
-    "ask-wa"(el) { const l = byId("loans", el.dataset.id); if (l) sendAsk(l); },
-    "rec-reply"(el) { const l = byId("loans", el.dataset.id); if (l) recReplyModal(l); },
+    lend(el) { if (need("lend")) lendModal({ itemId: el.dataset.id || "" }); },
+    "edit-loan"(el) { const l = byId("loans", el.dataset.id); if (l && need("loan_edit")) lendModal({ loan: l }); },
+    return(el) { const l = byId("loans", el.dataset.id); if (l && l.status === "out" && need("lend")) returnModal(l); },
+    "del-loan"(el) { const l = byId("loans", el.dataset.id); if (!l || !need("loan_edit")) return; delConfirm("എൻട്രി നീക്കം ചെയ്യണോ?", l.borrower + " — " + l.itemName, () => { softDelete("loans", l.id); updateAvail(l.itemId); }); },
+    remind(el) { const l = byId("loans", el.dataset.id); if (l && need("remind")) sendAsk(l); },
+    "ask-wa"(el) { const l = byId("loans", el.dataset.id); if (l && need("remind")) sendAsk(l); },
+    "rec-reply"(el) { const l = byId("loans", el.dataset.id); if (l && need("remind")) recReplyModal(l); },
     "ack-reply"(el) { const l = byId("loans", el.dataset.id), r = l && replyOf(l); if (r) { r.ack = true; save("replies", r); render(); } },
 
     /* requests */
-    "add-req"() { reqModal("", true); },
+    "add-req"() { if (need("reqs")) reqModal("", true); },
     "req-allow"(el) {
-      const r = byId("requests", el.dataset.id); if (!r) return;
+      const r = byId("requests", el.dataset.id); if (!r || !need("reqs")) return;
       const it = r.itemId ? byId("items", r.itemId) : null;
       if (!it) return toast("ഈ അപേക്ഷ ലിസ്റ്റിലില്ലാത്ത ഉപകരണത്തിനാണ്. 'നൽകുക' വഴി ഉപകരണം തിരഞ്ഞെടുത്ത് നൽകുക.", "warn");
       if (availQty(it) < 1) return toast("ഇപ്പോൾ ലഭ്യമല്ല. 'ഉപയോഗിക്കുന്നവരോട് ചോദിക്കുക' ഉപയോഗിക്കാം.", "warn");
       lendModal({ req: r, itemId: it.id });
     },
-    "req-no"(el) { const r = byId("requests", el.dataset.id); if (r) noModal(r); },
-    "req-ask"(el) { const r = byId("requests", el.dataset.id); if (r) askModal(r); },
+    "req-no"(el) { const r = byId("requests", el.dataset.id); if (r && need("reqs")) noModal(r); },
+    "req-ask"(el) { const r = byId("requests", el.dataset.id); if (r && need("reqs")) askModal(r); },
     "del-req"(el) { const r = byId("requests", el.dataset.id); if (r && isAdmin()) delConfirm("അപേക്ഷ നീക്കം ചെയ്യണോ?", r.name, () => softDelete("requests", r.id)); },
 
     /* admin */
-    "add-ann"() { if (isAdmin()) annModal(); },
-    "edit-ann"(el) { const r = byId("announcements", el.dataset.id); if (r && isAdmin()) annModal(r); },
-    "del-ann"(el) { const r = byId("announcements", el.dataset.id); if (r && isAdmin()) delConfirm("അറിയിപ്പ് നീക്കം ചെയ്യണോ?", r.title, () => softDelete("announcements", r.id)); },
+    "add-ann"() { if (need("ann")) annModal(); },
+    "edit-ann"(el) { const r = byId("announcements", el.dataset.id); if (r && need("ann")) annModal(r); },
+    "del-ann"(el) { const r = byId("announcements", el.dataset.id); if (r && need("ann")) delConfirm("അറിയിപ്പ് നീക്കം ചെയ്യണോ?", r.title, () => softDelete("announcements", r.id)); },
+    "add-svc"() { if (need("services")) svcModal(); },
+    "edit-svc"(el) { const r = byId("services", el.dataset.id); if (r && need("services")) svcModal(r); },
+    "del-svc"(el) { const r = byId("services", el.dataset.id); if (r && need("services")) delConfirm("പ്രവർത്തനം നീക്കം ചെയ്യണോ?", r.title, () => softDelete("services", r.id)); },
+    "del-member"(el) { const r = byId("members", el.dataset.id); if (r && isAdmin()) delConfirm("ജോയിൻ ചെയ്തയാളെ നീക്കം ചെയ്യണോ?", r.name, () => softDelete("members", r.id)); },
+    "save-entry"() {
+      if (!isAdmin()) return; const c = codeKey($("#a_entry").value);
+      if (!validCode(c)) return toast("എൻട്രി കോഡ് 4–12 അക്ഷരം/അക്കം ആയിരിക്കണം", "error");
+      const hs = pinHash(c); if (hs === ST().adminHash || live("staff").some((x) => x.pinHash === hs)) return toast("ഈ കോഡ് അഡ്മിൻ/സ്റ്റാഫ് കോഡ് ആണ്. മറ്റൊന്ന് നൽകുക", "error");
+      const st = ST(); st.entryCode = c; save("settings", st); toast("✅ എൻട്രി കോഡ് മാറ്റി"); render();
+    },
+    "month-pdf"(el) { if (!need("reports")) return; ui.month = ($("#rp_month") || {}).value || monthNow(); el.disabled = true; buildMonthPdf(ui.month).then((u) => { download(new Blob([u], { type: "application/pdf" }), "Swanthana_" + ui.month + ".pdf"); toast("PDF ഡൗൺലോഡ് ചെയ്തു"); }).catch(() => toast("PDF നിർമ്മിക്കാൻ കഴിഞ്ഞില്ല", "error")).then(() => { el.disabled = false; }); },
+    "month-wa"() {
+      if (!need("reports")) return; ui.month = ($("#rp_month") || {}).value || monthNow();
+      const arr = monthLoans(ui.month);
+      openWa("", ["*" + INFO().name + ", " + INFO().place + " — " + fmtMonth(ui.month) + "*", "------------------------"].concat(arr.length ? arr.map((l, i) => (i + 1) + ". " + l.borrower + " (" + (l.phone || "-") + ") — " + l.itemName + (l.qty > 1 ? " ×" + l.qty : "") + " • " + shortDate(l.dateOut) + (l.status === "out" ? " • ഉപയോഗത്തിൽ" : " • തിരിച്ചു " + shortDate(l.dateIn))) : ["ഈ മാസം ആരും എടുത്തിട്ടില്ല"]).join("\n"));
+    },
     "add-staff"() { if (isAdmin()) staffModal(); },
     "edit-staff"(el) { const r = byId("staff", el.dataset.id); if (r && isAdmin()) staffModal(r); },
     "del-staff"(el) { const r = byId("staff", el.dataset.id); if (r && isAdmin()) delConfirm("സ്റ്റാഫിനെ നീക്കം ചെയ്യണോ?", r.name, () => softDelete("staff", r.id)); },
@@ -965,12 +1062,14 @@
       save("info", b); toast("✅ സേവ് ചെയ്തു"); render();
     },
     "save-pin"() {
-      const a = $("#a_pin").value.trim(); if (!/^\d{4}$/.test(a)) return toast("പിൻ 4 അക്ക നമ്പർ ആയിരിക്കണം", "error");
-      const hs = pinHash(a); if (live("staff").some((x) => x.pinHash === hs)) return toast("ഈ പിൻ ഒരു സ്റ്റാഫിന്റേതാണ്", "error");
-      const s = ST(); s.adminHash = hs; save("settings", s); toast("✅ പിൻ മാറ്റി"); render();
+      if (!isAdmin()) return;
+      const a = codeKey($("#a_pin").value); if (!validCode(a)) return toast("കോഡ് 4–12 അക്ഷരം/അക്കം (ഇംഗ്ലീഷ്/സംഖ്യ) ആയിരിക്കണം", "error");
+      const hs = pinHash(a); if (live("staff").some((x) => x.pinHash === hs) || a === codeKey(ST().entryCode)) return toast("ഈ കോഡ് ഉപയോഗത്തിലുണ്ട്", "error");
+      const s2 = ST(); s2.adminHash = hs; save("settings", s2); toast("✅ കോഡ് മാറ്റി"); render();
     },
-    async "stock-pdf"(el) { el.disabled = true; try { download(new Blob([await buildStockPdf()], { type: "application/pdf" }), "Santhwanam_Stock_" + todayIso() + ".pdf"); toast("PDF ഡൗൺലോഡ് ചെയ്തു"); } catch (e) { toast("PDF നിർമ്മിക്കാൻ കഴിഞ്ഞില്ല", "error"); } el.disabled = false; },
+    async "stock-pdf"(el) { if (!need("reports")) return; el.disabled = true; try { download(new Blob([await buildStockPdf()], { type: "application/pdf" }), "Santhwanam_Stock_" + todayIso() + ".pdf"); toast("PDF ഡൗൺലോഡ് ചെയ്തു"); } catch (e) { toast("PDF നിർമ്മിക്കാൻ കഴിഞ്ഞില്ല", "error"); } el.disabled = false; },
     "stock-wa"() {
+      if (!need("reports")) return;
       const items = live("items").sort(byName);
       openWa("", ["*" + INFO().name + " — ഉപകരണ സ്റ്റോക്ക്* (" + todayIso() + ")", "------------------------"].concat(items.map((i) => "• " + i.name + ": ലഭ്യം " + availQty(i) + " / " + num(i.qty))).concat(["------------------------", "ഉപയോഗത്തിൽ: " + activeLoans().length + " പേർ"]).join("\n"));
     },
@@ -1044,8 +1143,7 @@
     });
     document.addEventListener("keydown", (ev) => {
       if (ev.key === "Escape" && modal) { closeModal(); return; }
-      if (!session && ui.login && !modal && /^[0-9]$/.test(ev.key)) { actions.pin({ dataset: { k: ev.key } }); return; }
-      if (!session && ui.login && !modal && ev.key === "Backspace") { actions["pin-back"](); return; }
+      if (ev.key === "Enter" && !session && !modal && (!state.me || ui.gate) && ev.target.tagName === "INPUT") { ev.preventDefault(); if (ev.target.id === "g_code") enter(); else join(); return; }
       if (ev.key === "Enter" && modal && ev.target.tagName === "INPUT" && modal.onOk) { ev.preventDefault(); actions["modal-ok"](); }
     });
     window.addEventListener("online", () => { updateStatus(); sync(false); });
@@ -1073,7 +1171,7 @@
     if (online()) sync(false);
     setInterval(() => { if (online() && document.visibilityState === "visible" && !syncing && !ui.hash) sync(false); }, CFG.POLL_MS);
     if (window.__SNT_TEST) {
-      window.__SNT = { state: () => state, session: () => session, ui: () => ui, render, actions, save, mergeRemote, availQty, outQty, shownAvail, updateAvail, askText, allowText, buildStockPdf, pinHash, replyOf, setSession: (r) => { session = r ? { role: r, name: r, id: r } : null; }, live, replyCtx: () => replyCtx };
+      window.__SNT = { state: () => state, session: () => session, ui: () => ui, render, actions, save, mergeRemote, availQty, outQty, shownAvail, updateAvail, askText, allowText, buildStockPdf, pinHash, replyOf, setSession: (r) => { session = r ? { role: r, name: r, id: r } : null; }, live, replyCtx: () => replyCtx, can, enter, join, buildMonthPdf, monthLoans };
     }
   }
   boot();
