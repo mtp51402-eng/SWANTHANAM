@@ -532,7 +532,8 @@
   const isStandalone = () => window.matchMedia("(display-mode: standalone)").matches || window.navigator.standalone === true;
   const PUB_TABS = [["p_items", "ഉപകരണങ്ങൾ", "heart"], ["p_my", "എന്റെ അപേക്ഷ", "inbox"], ["p_contact", "ബന്ധപ്പെടുക", "phone"]];
   const staffTabs = () => [["s_home", "ഹോം", "home"], ["s_items", "ഉപകരണങ്ങൾ", "box"], ["s_loans", "കൊടുത്തവ", "hand"], ["s_reqs", "അപേക്ഷകൾ", "inbox"], ["s_more", isAdmin() ? "അഡ്മിൻ" : "കൂടുതൽ", "settings"]].filter((t) => (t[0] !== "s_loans" || can("view_loans")) && (t[0] !== "s_reqs" || can("reqs")));
-  function render() {
+  function render() { renderCore(); maybeAnnPopup(); }
+  function renderCore() {
     const root = $("#root");
     if (ui.hash) { root.innerHTML = replyPageView(); return; }
     if (!session && (!state.me || ui.gate || ui.regDone)) { root.innerHTML = gateView(); return; }
@@ -559,6 +560,18 @@
       case "s_more": return moreView();
       default: return pubItemsView();
     }
+  }
+  /* ---------- അറിയിപ്പ് പോപ്പ്അപ് (ആപ്പ് തുറക്കുമ്പോൾ) ---------- */
+  const SEEN_KEY = "snt_ann_seen";
+  const annSeen = () => { try { return JSON.parse(localStorage.getItem(SEEN_KEY) || "{}") || {}; } catch (e) { return {}; } };
+  const annStamp = (a) => String(a.updatedAt || a.at || 0);
+  function annUnseen() { const seen = annSeen(); return live("announcements").filter((a) => a.popup && seen[a.id] !== annStamp(a)).sort((a, b) => (b.at || 0) - (a.at || 0)).slice(0, 3); }
+  function maybeAnnPopup() {
+    if (modal || ui.hash || $("#g_code")) return;
+    const arr = annUnseen(); if (!arr.length) return;
+    const body = arr.map((a) => '<div class="notice" style="margin:0 0 10px"><div class="nh">' + ICON.mega + h(a.title || "അറിയിപ്പ്") + '</div><div class="nt">' + h(a.text) + "</div></div>").join("");
+    modal = { title: "പുതിയ അറിയിപ്പ്", body, focus: false, ids: arr.map((a) => [a.id, annStamp(a)]), footer: '<div class="acts"><button type="button" class="btn block" data-act="ann-seen">ശരി</button></div>' };
+    renderModal();
   }
   function softRefresh() {
     if (modal || ui.hash) return;
@@ -592,10 +605,10 @@
   /* ---------- PUBLIC ---------- */
   function pubItemsView() {
     const b = INFO(), items = filteredItems();
-    return '<section class="hero"><div class="hero-t">' + h(b.name) + '</div><p>' + h(b.about) + '</p><div class="hero-st"><i class="mk g"></i>' + live("items").filter((i) => shownAvail(i) > 0).length + " ഉപകരണങ്ങൾ ഇപ്പോൾ ലഭ്യമാണ്</div>" + '<div class="row wrap">' + (b.phone ? '<a class="btn amber sm" href="tel:' + h(b.phone) + '">' + ICON.phone + "വിളിക്കുക</a>" : "") + (waNum(b.wa || b.phone) ? '<a class="btn ghost sm" target="_blank" rel="noopener" href="https://wa.me/' + waNum(b.wa || b.phone) + '">' + ICON.msg + "WhatsApp</a>" : "") + "</div></section>" +
+    return '<section class="hero"><div class="hero-t">' + h(b.name) + '</div><p>' + h(b.about) + '</p><div class="row wrap">' + (b.phone ? '<a class="btn amber sm" href="tel:' + h(b.phone) + '">' + ICON.phone + "വിളിക്കുക</a>" : "") + (waNum(b.wa || b.phone) ? '<a class="btn ghost sm" target="_blank" rel="noopener" href="https://wa.me/' + waNum(b.wa || b.phone) + '">' + ICON.msg + "WhatsApp</a>" : "") + "</div></section>" +
       announceCards(3) + servicesCards() +
       '<section class="card stack"><label class="searchbox">' + ICON.search + '<input class="in" data-ui="search" placeholder="ഉപകരണം തിരയുക… (വീൽചെയർ, വാക്കർ…)" value="' + h(ui.search) + '"></label>' + catChips() + "</section>" +
-      '<div class="grid-cards">' + (items.length ? items.map((it) => '<article class="icard"><div class="row between"><div class="t">' + h(it.name) + '</div></div><div class="s">' + h(it.category || "മറ്റുള്ളവ") + (it.note ? " • " + h(it.note) : "") + '</div><button type="button" class="btn block ' + (shownAvail(it) > 0 ? "" : "ghost") + '" data-act="req" data-id="' + h(it.id) + '">' + ICON.hand + (shownAvail(it) > 0 ? "അപേക്ഷിക്കുക" : "ലഭ്യമാകുമ്പോൾ അറിയിക്കുക") + "</button></article>").join("") : emptyBox(live("items").length ? "ഒന്നും കണ്ടെത്തിയില്ല" : "ഉപകരണങ്ങൾ ഉടൻ ചേർക്കും")) + "</div>" +
+      '<div class="grid-cards">' + (items.length ? items.map((it) => '<article class="icard"><div class="row between"><div class="t">' + h(it.name) + '</div></div><div class="s">' + h(it.category || "മറ്റുള്ളവ") + (it.note ? " • " + h(it.note) : "") + '</div><button type="button" class="btn block" data-act="req" data-id="' + h(it.id) + '">' + ICON.hand + "അപേക്ഷിക്കുക</button></article>").join("") : emptyBox(live("items").length ? "ഒന്നും കണ്ടെത്തിയില്ല" : "ഉപകരണങ്ങൾ ഉടൻ ചേർക്കും")) + "</div>" +
       '<section class="card stack"><b>ഇവിടെ ഇല്ലാത്ത ഉപകരണം വേണോ?</b><div class="muted">ലിസ്റ്റിൽ ഇല്ലാത്ത ഉപകരണത്തിനും അപേക്ഷ നൽകാം. ഓഫീസ് സ്റ്റാഫ് ബന്ധപ്പെടും.</div><button type="button" class="btn ghost block" data-act="req" data-id="">' + ICON.plus + "മറ്റൊരു ഉപകരണത്തിന് അപേക്ഷിക്കുക</button></section>";
   }
   function myReqView() {
@@ -998,7 +1011,7 @@
     const it = item ? byId("items", item) : null;
     openModal({
       title: staffAdd ? "അപേക്ഷ ചേർക്കുക" : "ഉപകരണത്തിന് അപേക്ഷിക്കുക",
-      body: (it ? '<div class="banner green">' + h(it.name) + (shownAvail(it) > 0 ? " — ലഭ്യം" : " — ഇപ്പോൾ ലഭ്യമല്ല (ലഭ്യമാകുമ്പോൾ അറിയിക്കും)") + "</div>" :
+      body: (it ? '<div class="banner green">' + h(it.name) + (session ? (shownAvail(it) > 0 ? " — ലഭ്യം" : " — ഇപ്പോൾ ലഭ്യമല്ല (ലഭ്യമാകുമ്പോൾ അറിയിക്കും)") : "") + "</div>" :
         (staffAdd ? '<label class="f">ഉപകരണം<select id="mf_item" class="sel"><option value="">— ലിസ്റ്റിൽ ഇല്ല —</option>' + live("items").sort(byName).map((i) => opt(i.id, i.name, false)).join("") + '</select></label>' : "") + '<label class="f">' + (staffAdd ? "ലിസ്റ്റിൽ ഇല്ലെങ്കിൽ ഉപകരണത്തിന്റെ പേര്" : "ഏത് ഉപകരണം വേണം?") + '<input id="mf_text" class="in" placeholder="ഉദാ: വാട്ടർ ബെഡ്"></label>') +
         '<label class="f">അപേക്ഷകന്റെ പേര്<input id="mf_name" class="in" autocomplete="name" value="' + h(!staffAdd && state.me ? state.me.name : "") + '"></label><div class="g2"><label class="f">മൊബൈൽ നമ്പർ<input id="mf_phone" class="in" inputmode="tel" autocomplete="tel" value="' + h(!staffAdd && state.me ? state.me.phone : "") + '"></label><label class="f">സ്ഥലം<input id="mf_place" class="in" value="' + h(!staffAdd && state.me ? state.me.place : "") + '"></label></div>' +
         '<div class="g2"><label class="f">എണ്ണം<input id="mf_qty" class="in" type="number" min="1" step="1" inputmode="numeric" value="1"></label><label class="f">എപ്പോൾ വേണം<input id="mf_when" class="in" type="date" value="' + todayIso() + '"></label></div><label class="f">ആർക്ക് / എന്തിന് (ഹ്രസ്വമായി)<input id="mf_need" class="in" maxlength="200" placeholder="ഉദാ: ഉമ്മയ്ക്ക് ശസ്ത്രക്രിയ കഴിഞ്ഞു, നടക്കാൻ പ്രയാസം"></label>',
@@ -1135,12 +1148,12 @@
   }
   function annModal(rec) {
     openModal({
-      title: rec ? "അറിയിപ്പ് എഡിറ്റ്" : "പുതിയ അറിയിപ്പ്", text: "ഇത് പൊതു പേജിൽ എല്ലാവർക്കും കാണും.",
-      body: '<label class="f">തലക്കെട്ട്<input id="mf_title" class="in" maxlength="80" value="' + h(rec ? rec.title : "") + '" placeholder="ഉദാ: പുതിയ ഉപകരണങ്ങൾ എത്തി"></label><label class="f">വിവരണം<textarea id="mf_text" class="ta" rows="4" maxlength="600">' + h(rec ? rec.text : "") + '</textarea></label><label class="switch ' + (rec && rec.pinned ? "on" : "") + '" id="mf_pin" data-act="sw-toggle"><span><b style="font-size:.86rem">📌 മുകളിൽ പിൻ ചെയ്യുക</b></span><div class="tr"><i></i></div></label>',
+      title: rec ? "അറിയിപ്പ് എഡിറ്റ്" : "പുതിയ അറിയിപ്പ്", text: "ഇത് പൊതു പേജിൽ എല്ലാവർക്കും കാണും. പോപ്പ്അപ് ഓൺ ആണെങ്കിൽ ആപ്പ് തുറക്കുമ്പോൾ സ്ക്രീനിൽ വന്ന് ഓരോരുത്തരും 'ശരി' അമർത്തുന്നതുവരെ കാണിക്കും.",
+      body: '<label class="f">തലക്കെട്ട്<input id="mf_title" class="in" maxlength="80" value="' + h(rec ? rec.title : "") + '" placeholder="ഉദാ: വീൽചെയർ അത്യാവശ്യമുണ്ട്"></label><label class="f">വിവരണം<textarea id="mf_text" class="ta" rows="4" maxlength="600">' + h(rec ? rec.text : "") + '</textarea></label><label class="switch ' + (rec && rec.pinned ? "on" : "") + '" id="mf_pin" data-act="sw-toggle"><span><b style="font-size:.86rem">📌 മുകളിൽ പിൻ ചെയ്യുക</b></span><div class="tr"><i></i></div></label><label class="switch ' + (!rec || rec.popup ? "on" : "") + '" id="mf_pop" data-act="sw-toggle"><span><b style="font-size:.86rem">🔔 ആപ്പ് തുറക്കുമ്പോൾ എല്ലാവർക്കും പോപ്പ്അപ് ആയി കാണിക്കുക</b></span><div class="tr"><i></i></div></label>',
       onOk() {
         const title = clean(mv("title")), text = String(mv("text") || "").replace(/\r/g, "").trim();
         if (!text) return modalErr("വിവരണം നൽകുക.");
-        save("announcements", Object.assign(rec ? {} : { id: uid("an"), deleted: false, at: Date.now() }, rec || {}, { title: title || "അറിയിപ്പ്", text, pinned: $("#mf_pin").classList.contains("on") }));
+        save("announcements", Object.assign(rec ? {} : { id: uid("an"), deleted: false, at: Date.now() }, rec || {}, { title: title || "അറിയിപ്പ്", text, pinned: $("#mf_pin").classList.contains("on"), popup: $("#mf_pop").classList.contains("on") }));
         toast("✅ അറിയിപ്പ് പ്രസിദ്ധീകരിച്ചു"); render();
       }
     });
@@ -1163,6 +1176,7 @@
 
   const actions = {
     enter, register,
+    "ann-seen"() { try { const seen = annSeen(); ((modal && modal.ids) || []).forEach((p) => { seen[p[0]] = p[1]; }); localStorage.setItem(SEEN_KEY, JSON.stringify(seen)); } catch (e) { /* ignore */ } closeModal(); maybeAnnPopup(); },
     "reg-open"() { ui.reg = true; render(); },
     "reg-back"() { ui.reg = false; render(); },
     "reg-done"() { ui.regDone = null; ui.reg = false; ui.gate = false; ui.tab = "p_items"; render(); sync(false); },
@@ -1289,7 +1303,7 @@
     document.addEventListener("click", (ev) => {
       const el = ev.target.closest("[data-act]"); if (!el) return;
       const act = el.dataset.act;
-      if (act === "modal-bg") { if (ev.target === el) closeModal(); return; }
+      if (act === "modal-bg") { if (ev.target === el) { if (modal && modal.ids) actions["ann-seen"](); else closeModal(); } return; }
       if (actions[act]) { if (el.tagName === "A") return; actions[act](el, ev); }
     });
     document.addEventListener("input", (ev) => {
