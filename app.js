@@ -9,6 +9,10 @@
   const CFG = {
     DB: "https://swanthanam-253da-default-rtdb.asia-southeast1.firebasedatabase.app", // ← Firebase Realtime Database URL (e.g. https://xxxx-default-rtdb.asia-southeast1.firebasedatabase.app). Can also be set once via  ?db=<url>
     ROOT: "santhwanam-v1",
+    // ---- Firebase Authentication ----
+    API_KEY: "AIzaSyDxp-sTGaDq5ya6l22UkBhI4UMGW_F2MlE",
+    ADMIN_EMAIL: "cvhakeem313@gmail.com",
+    ADMIN_UID: "8o4nO3c1PUOfVdz6dpW02mZnk1x1",
     IDB: "santhwanam",
     DB_KEY: "snt_db_url",
     SYNC_DEBOUNCE: 1200,
@@ -17,7 +21,7 @@
     MAX_TRIES: 5,
     LOCK_MS: 30000
   };
-  const COLS = ["items", "loans", "requests", "replies", "announcements", "services", "members", "codes", "staff", "info", "settings"];
+  const COLS = ["items", "loans", "requests", "replies", "announcements", "services", "members", "codes", "staff", "info", "settings", "replyLinks", "staffCodes"];
   const PUBLIC_COLS = ["items", "announcements", "services", "info"];
   const BACKUP_COLS = ["items", "loans", "requests", "replies", "announcements", "services", "members", "codes", "staff"];
   const CATEGORIES = ["വീൽചെയർ", "വാക്കർ", "ക്രച്ചസ് / വടി", "ഹോസ്പിറ്റൽ കട്ടിൽ", "എയർ / വാട്ടർ ബെഡ്", "കമ്മോഡ് ചെയർ", "ഓക്സിജൻ കോൺസെൻട്രേറ്റർ", "നെബുലൈസർ", "BP / ഷുഗർ മെഷീൻ", "മറ്റുള്ളവ"];
@@ -134,11 +138,11 @@
      3. STATE & LOCAL PERSISTENCE
      ===================================================================== */
   const defaultInfo = () => ({ id: "main", updatedAt: 0, name: "സ്വാന്തന കേന്ദ്രം", tag: "മുസ്ലിം ജമാഅത്ത് • SYS • SSF", place: "പാലത്തുങ്കര", phone: "", wa: "", hours: "", about: "രോഗികൾക്കും വികലാംഗർക്കും ആവശ്യമായ ഉപകരണങ്ങൾ ആവശ്യക്കാർക്ക് ഉപയോഗത്തിനായി നൽകുന്ന സേവന കേന്ദ്രം." });
-  const defaultSettings = () => ({ id: "main", updatedAt: 0, adminHash: pinHash("1234"), adminCode: "1234" });
+  const defaultSettings = () => ({ id: "main", updatedAt: 0 });
   function defaultState() {
     return {
       v: 1,
-      data: { items: {}, loans: {}, requests: {}, replies: {}, announcements: {}, services: {}, members: {}, codes: {}, staff: {}, info: { main: defaultInfo() }, settings: { main: defaultSettings() } },
+      data: { items: {}, loans: {}, requests: {}, replies: {}, announcements: {}, services: {}, members: {}, codes: {}, staff: {}, replyLinks: {}, staffCodes: {}, info: { main: defaultInfo() }, settings: { main: defaultSettings() } },
       dirty: {}, lastSync: 0, lastAutoBackup: "", lock: { n: 0, until: 0 }, theme: "light", myReq: [], me: null
     };
   }
@@ -181,7 +185,7 @@
       if (!Array.isArray(state.myReq)) state.myReq = [];
       if (!state.me || typeof state.me !== "object") state.me = null;
       const inf = state.data.info.main; if (inf && inf.name === "\u0d38\u0d3e\u0d28\u0d4d\u0d24\u0d4d\u0d35\u0d28\u0d02" && !inf.updatedAt) { inf.name = defaultInfo().name; }
-      const sm = state.data.settings.main; if (sm && sm.adminCode == null && sm.adminHash === pinHash("1234")) sm.adminCode = "1234";
+      const sm = state.data.settings.main; if (sm) { delete sm.adminHash; delete sm.adminCode; }
     }
   }
   function persist() { clearTimeout(persistTimer); persistTimer = setTimeout(persistNow, 250); }
@@ -216,7 +220,17 @@
     state.data[col][rec.id] = rec;
     state.dirty[col + "/" + rec.id] = 1;
     persist(); scheduleSync();
+    if (col === "loans" && session) queueReplyLink(rec);
     return rec;
+  }
+  // Public "reply" page needs only who/what, never the loan itself: staff publish a small record per loan
+  async function queueReplyLink(l) {
+    try {
+      const th = await sha(l.token), cur = state.data.replyLinks[l.id];
+      const next = { id: l.id, borrower: l.borrower, itemName: l.itemName, status: l.status, tokHash: th, deleted: !!l.deleted };
+      if (cur && ["tokHash", "borrower", "itemName", "status", "deleted"].every((k) => cur[k] === next[k])) return;
+      save("replyLinks", next);
+    } catch (e) { /* ignore */ }
   }
   function softDelete(col, id) { const r = state.data[col][id]; if (r) { r.deleted = true; save(col, r); } }
 
@@ -248,9 +262,36 @@
   function dbBase() { try { const u = localStorage.getItem(CFG.DB_KEY); if (u) return u; } catch (e) { /* ignore */ } return CFG.DB; }
   const hasDb = () => !!dbBase();
   const url = (path) => dbBase().replace(/\/+$/, "") + "/" + CFG.ROOT + (path ? "/" + path : "") + ".json";
+  const enc = encodeURIComponent;
+  const isPlaceholder = (v) => !v || /^PASTE_/.test(v);
+  let auth = null; // {idToken, refreshToken, exp, uid} — admin/staff, memory only
+  async function sha(s) { const b = await crypto.subtle.digest("SHA-256", new TextEncoder().encode("snt1|" + s)); return Array.from(new Uint8Array(b)).map((x) => x.toString(16).padStart(2, "0")).join(""); }
+  async function authCall(endpoint, body) {
+    const r = await fetch("https://identitytoolkit.googleapis.com/v1/accounts:" + endpoint + "?key=" + enc(CFG.API_KEY), { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error((j.error && j.error.message) || "HTTP " + r.status);
+    return j;
+  }
+  function setAuth(j) { auth = { idToken: j.idToken, refreshToken: j.refreshToken, exp: Date.now() + (Number(j.expiresIn) || 3600) * 1000, uid: j.localId }; }
+  async function getToken() {
+    if (!auth) return null;
+    if (auth.exp - 60000 > Date.now() || !online()) return auth.idToken;
+    const r = await fetch("https://securetoken.googleapis.com/v1/token?key=" + enc(CFG.API_KEY), { method: "POST", headers: { "Content-Type": "application/x-www-form-urlencoded" }, body: "grant_type=refresh_token&refresh_token=" + enc(auth.refreshToken) });
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok) { const e = new Error("AUTH"); e.status = 401; throw e; }
+    auth = { idToken: j.id_token, refreshToken: j.refresh_token || auth.refreshToken, exp: Date.now() + (Number(j.expires_in) || 3600) * 1000, uid: j.user_id || auth.uid };
+    return auth.idToken;
+  }
+  async function dbReq(path, opt) {
+    opt = opt || {};
+    const q = [];
+    if (session && auth) { const t = await getToken(); if (t) q.push("auth=" + enc(t)); }
+    const body = opt.body !== undefined;
+    return fetch(url(path) + (q.length ? "?" + q.join("&") : ""), { method: opt.method || "GET", cache: "no-store", headers: body ? { "Content-Type": "application/json" } : undefined, body: body ? JSON.stringify(opt.body) : undefined });
+  }
   async function getJson(path) {
-    const r = await fetch(url(path), { cache: "no-store" });
-    if (!r.ok) throw new Error("HTTP " + r.status);
+    const r = await dbReq(path);
+    if (!r.ok) { const e = new Error("HTTP " + r.status); e.status = r.status; throw e; }
     return r.json();
   }
   function mergeRemote(root) {
@@ -268,8 +309,13 @@
     });
     return changed;
   }
+  const STAFF_PULL = ["items", "loans", "requests", "replies", "announcements", "services", "members", "codes", "staff", "info", "settings", "replyLinks"];
   async function pull() {
-    if (session) return mergeRemote(await getJson(""));
+    if (session) {
+      const cols = isAdmin() ? STAFF_PULL.concat(["staffCodes"]) : STAFF_PULL, root = {};
+      await Promise.all(cols.map(async (c) => { root[c] = await getJson(c); }));
+      return mergeRemote(root);
+    }
     // Public devices read only the public collections + their own requests
     const root = {};
     await Promise.all(PUBLIC_COLS.map(async (c) => { root[c] = await getJson(c); }));
@@ -278,22 +324,25 @@
     root.requests = mine;
     return mergeRemote(root);
   }
-  async function pullAuth() { return mergeRemote({ settings: await getJson("settings"), staff: await getJson("staff"), info: await getJson("info") }); }
+  // Public devices may only write what the rules allow them to create
+  const PUBLIC_WRITE = ["members", "codes", "requests"];
+  const pushable = (k) => (session ? (isAdmin() || k.split("/")[0] !== "staffCodes") : PUBLIC_WRITE.indexOf(k.split("/")[0]) >= 0);
   async function push() {
-    const keys = Object.keys(state.dirty);
+    const keys = Object.keys(state.dirty).filter(pushable);
     for (let i = 0; i < keys.length; i += 4) {
       await Promise.all(keys.slice(i, i + 4).map(async (k) => {
         const [col, id] = k.split("/");
         const rec = state.data[col] && state.data[col][id];
         if (!rec) { delete state.dirty[k]; return; }
         const stamp = rec.updatedAt;
-        const r = await fetch(url(k), { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(rec) });
-        if (!r.ok) throw new Error("HTTP " + r.status);
+        const r = await dbReq(k, { method: "PUT", body: rec });
+        if (!r.ok) { const e = new Error("HTTP " + r.status); e.status = r.status; throw e; }
         const now = state.data[col][id];
         if (now && now.updatedAt === stamp) delete state.dirty[k];
       }));
     }
   }
+
   function scheduleSync() { clearTimeout(syncTimer); syncTimer = setTimeout(() => sync(false), CFG.SYNC_DEBOUNCE); updateStatus(); }
   async function sync(manual) {
     if (!hasDb()) { syncState = "nodb"; updateStatus(); return "nodb"; }
@@ -305,7 +354,7 @@
     try { changed = await pull(); } catch (e) { syncErr = syncErr || String((e && e.message) || e); }
     if (!syncErr) {
       state.lastSync = Date.now(); syncState = "ok";
-      if (session) { reconcileAvail(); }
+      if (session) { reconcileAvail(); live("loans").forEach((l) => { if (l.status === "out" && !state.data.replyLinks[l.id]) queueReplyLink(l); }); }
       if (changed || pending()) { try { await push(); } catch (e) { /* retry next time */ } }
     } else { syncState = "err"; }
     syncing = false;
@@ -362,13 +411,24 @@
      7. LOGIN (staff / admin)
      ===================================================================== */
   const genBase = (name) => segs(String(name || "").normalize("NFC").replace(/[^\p{L}\p{M}\p{N}]/gu, "")).slice(0, 3).join("").toLowerCase();
+  async function staffCodeTaken(c, exceptId) {
+    if (Object.values(state.data.staffCodes || {}).some((x) => x && !x.deleted && x.id !== exceptId && x.code === c)) return true;
+    const l = state.data.codes[c]; if (l && !l.deleted) return true;
+    if (online() && hasDb()) {
+      try { const r = await withTimeout(getJson("codes/" + c), 6000); if (r && !r.deleted) return true; } catch (e) { /* local only */ }
+      try { const r2 = await withTimeout(getJson("staffLogin/" + (await sha(c))), 6000); if (r2 && r2.id && r2.id !== exceptId) return true; } catch (e) { /* local only */ }
+    }
+    return false;
+  }
   async function uniqueCode(name, digits, mid) {
     const base = genBase(name) || "mem";
     const taken = async (c) => {
-      const hs = pinHash(c);
-      if (hs === ST().adminHash || live("staff").some((x) => x.pinHash === hs)) return true;
+      if (Object.values(state.data.staffCodes || {}).some((x) => x && !x.deleted && x.code === c)) return true;
       const l = state.data.codes[c]; if (l && !l.deleted && l.memberId !== mid) return true;
-      if (online() && hasDb()) { try { const r = await withTimeout(getJson("codes/" + c), 6000); if (r && !r.deleted && r.memberId && r.memberId !== mid) return true; } catch (e) { /* offline: local check only */ } }
+      if (online() && hasDb()) {
+        try { const r = await withTimeout(getJson("codes/" + c), 6000); if (r && !r.deleted && r.memberId && r.memberId !== mid) return true; } catch (e) { /* offline: local check only */ }
+        try { const r2 = await withTimeout(getJson("staffLogin/" + (await sha(c))), 6000); if (r2 && r2.id) return true; } catch (e) { /* ignore */ }
+      }
       return false;
     };
     for (let n = 3; n <= 10; n++) { const c = base + digits.slice(0, n); if (!(await taken(c))) return c; }
@@ -390,31 +450,53 @@
       '<div class="sync-note"><span class="dot ' + st[0] + '" id="syncDot"></span><span id="syncText">' + h(st[1]) + "</span></div></div></div>";
   }
   const gateMsg = (id, msg) => { const e = $("#" + id); if (e) e.textContent = msg || ""; };
+  let entering = false;
   async function enter() {
-    const code = codeKey(($("#g_code") || {}).value), now = Date.now();
+    if (entering) return;
+    const rawIn = String(($("#g_code") || {}).value || "").trim(), code = codeKey(rawIn), now = Date.now();
     if (!code) return gateMsg("gateErr", "കോഡ് നൽകുക");
     if (state.lock.until > now) return gateMsg("gateErr", "കുറച്ച് സമയത്തിന് ശേഷം ശ്രമിക്കുക (" + Math.ceil((state.lock.until - now) / 1000) + " സെക്കൻഡ്)");
+    entering = true;
     gateMsg("gateErr", "പരിശോധിക്കുന്നു…");
-    if (online() && hasDb()) { try { await withTimeout(pullAuth(), 7000); } catch (e) { /* use local copy */ } }
-    const hs = pinHash(code);
-    let sess = null;
-    if (hs === ST().adminHash) sess = { role: "admin", name: "അഡ്മിൻ", id: "admin" };
-    else { const stf = live("staff").find((x) => x.pinHash === hs); if (stf) sess = { role: "staff", name: stf.name, id: stf.id }; }
-    if (sess) {
-      state.lock = { n: 0, until: 0 }; persist();
-      session = sess; ui.gate = false; ui.tab = "s_home";
-      autoBackupCheck(); render(); toast("സ്വാഗതം " + sess.name); sync(false); return;
-    }
-    let mrec = state.data.codes[code];
-    if ((!mrec || mrec.deleted) && online() && hasDb()) { try { mrec = await withTimeout(getJson("codes/" + code), 6000); } catch (e) { /* ignore */ } }
-    if (mrec && !mrec.deleted && mrec.memberId) {
-      state.lock = { n: 0, until: 0 }; state.me = { name: mrec.name, phone: mrec.phone, place: mrec.place, id: mrec.memberId, code };
-      ui.gate = false; ui.tab = "p_items"; persist(); render(); toast("സ്വാഗതം " + mrec.name); sync(false); return;
-    }
-    state.lock.n++;
-    if (state.lock.n >= CFG.MAX_TRIES) { state.lock = { n: 0, until: Date.now() + CFG.LOCK_MS }; gateMsg("gateErr", "5 തവണ തെറ്റി. 30 സെക്കൻഡ് കാത്തിരിക്കുക."); }
-    else gateMsg("gateErr", "കോഡ് ശരിയല്ല (" + (CFG.MAX_TRIES - state.lock.n) + " ശ്രമങ്ങൾ ബാക്കി). കോഡ് ഇല്ലെങ്കിൽ 'പുതിയ രജിസ്റ്റർ' അമർത്തുക.");
-    persist();
+    try {
+      // 1) member code (public, read by exact key)
+      let mrec = state.data.codes[code];
+      if ((!mrec || mrec.deleted) && online() && hasDb()) { try { mrec = await withTimeout(getJson("codes/" + code), 6000); } catch (e) { /* ignore */ } }
+      if (mrec && !mrec.deleted && mrec.memberId) {
+        state.lock = { n: 0, until: 0 }; state.me = { name: mrec.name, phone: mrec.phone, place: mrec.place, id: mrec.memberId, code };
+        ui.gate = false; ui.tab = "p_items"; persist(); render(); toast("സ്വാഗതം " + mrec.name); sync(false); return;
+      }
+      if (!online() || !hasDb()) return gateMsg("gateErr", "സ്റ്റാഫ്/അഡ്മിൻ പ്രവേശനത്തിന് ഇന്റർനെറ്റ് വേണം");
+      if (isPlaceholder(CFG.API_KEY)) return gateMsg("gateErr", "ആപ്പ് സജ്ജീകരണം പൂർത്തിയായിട്ടില്ല (API key)");
+      let sess = null;
+      // 2) staff: code → hashed lookup → Firebase sign-in
+      try {
+        const lk = await withTimeout(getJson("staffLogin/" + (await sha(code))), 7000);
+        if (lk && lk.email) { const j = await authCall("signInWithPassword", { email: lk.email, password: code, returnSecureToken: true }); setAuth(j); sess = { role: "staff", name: lk.name || "സ്റ്റാഫ്", id: lk.id }; }
+      } catch (e) { auth = null; if (/TOO_MANY/.test(String(e.message))) return gateMsg("gateErr", "ഒരുപാട് ശ്രമങ്ങൾ. കുറച്ച് കഴിഞ്ഞ് ശ്രമിക്കുക."); }
+      // 3) admin: Firebase e-mail + password
+      if (!sess && !isPlaceholder(CFG.ADMIN_EMAIL)) {
+        try {
+          const j = await authCall("signInWithPassword", { email: CFG.ADMIN_EMAIL, password: rawIn, returnSecureToken: true });
+          if (isPlaceholder(CFG.ADMIN_UID) || j.localId === CFG.ADMIN_UID) { setAuth(j); sess = { role: "admin", name: "അഡ്മിൻ", id: "admin" }; }
+        } catch (e) { auth = null; if (/TOO_MANY/.test(String(e.message))) return gateMsg("gateErr", "ഒരുപാട് ശ്രമങ്ങൾ. കുറച്ച് കഴിഞ്ഞ് ശ്രമിക്കുക."); }
+      }
+      if (sess) {
+        state.lock = { n: 0, until: 0 }; persist();
+        session = sess; ui.gate = false; ui.tab = "s_home";
+        autoBackupCheck(); render(); toast("സ്വാഗതം " + sess.name); sync(false).then(() => { if (isAdmin()) adminCleanup(); });
+        return;
+      }
+      state.lock.n++;
+      if (state.lock.n >= CFG.MAX_TRIES) { state.lock = { n: 0, until: Date.now() + CFG.LOCK_MS }; gateMsg("gateErr", "5 തവണ തെറ്റി. 30 സെക്കൻഡ് കാത്തിരിക്കുക."); }
+      else gateMsg("gateErr", "കോഡ് ശരിയല്ല (" + (CFG.MAX_TRIES - state.lock.n) + " ശ്രമങ്ങൾ ബാക്കി). കോഡ് ഇല്ലെങ്കിൽ 'പുതിയ രജിസ്റ്റർ' അമർത്തുക.");
+      persist();
+    } finally { entering = false; }
+  }
+  // One-time clean-up of old plain-text admin code left in the shared settings record
+  function adminCleanup() {
+    const s2 = state.data.settings.main;
+    if (s2 && (s2.adminHash != null || s2.adminCode != null)) { delete s2.adminHash; delete s2.adminCode; save("settings", s2); }
   }
   async function register() {
     const name = clean(($("#g_name") || {}).value), digits = String(($("#g_phone") || {}).value || "").replace(/\D/g, "").slice(-10), place = clean(($("#g_place") || {}).value);
@@ -433,7 +515,16 @@
     state.me = { name: rec.name, phone: digits, place: rec.place, id, code: rec.code };
     ui.regDone = { name: rec.name, code: rec.code, existing }; persist(); render(); sync(false);
   }
-  function logout() { session = null; ui.tab = "p_items"; ui.gate = false; modal = null; renderModal(); render(); }
+  const PRIVATE_COLS = ["loans", "requests", "replies", "members", "codes", "staff", "staffCodes", "replyLinks"];
+  function logout() {
+    session = null; auth = null; ui.tab = "p_items"; ui.gate = false; modal = null; renderModal();
+    // do not leave members / loans on a shared phone (only when nothing is still waiting to upload)
+    if (!Object.keys(state.dirty).some((k) => PRIVATE_COLS.indexOf(k.split("/")[0]) >= 0 && k.split("/")[0] !== "requests")) {
+      const mine = {}; state.myReq.forEach((id) => { if (state.data.requests[id]) mine[id] = state.data.requests[id]; });
+      PRIVATE_COLS.forEach((c) => { state.data[c] = {}; }); state.data.requests = mine; persist();
+    }
+    render();
+  }
 
   /* =====================================================================
      8. SHELL
@@ -589,7 +680,7 @@
     const hd = (t, sub, btn) => '<div class="row between pad-s"><div><h2>' + t + "</h2>" + (sub ? '<div class="muted">' + sub + "</div>" : "") + "</div>" + (btn || "") + "</div>";
     const eb = (act, id, ic, cls) => '<button type="button" class="btn sm ghost ' + (cls || "") + '" data-act="' + act + '" data-id="' + h(id) + '">' + ic + "</button>";
     if (isAdmin()) {
-      o += (ST().adminHash === pinHash("1234") ? '<div class="banner red">⚠️ ഡിഫോൾട്ട് അഡ്മിൻ കോഡ് (1234) ഇപ്പോഴും ഉപയോഗത്തിലുണ്ട്. ഉടൻ മാറ്റുക.</div>' : "") ;
+      o += (live("staff").some((x) => !x.authEmail) ? '<div class="banner red">⚠️ ' + live("staff").filter((x) => !x.authEmail).length + ' സ്റ്റാഫിന് സുരക്ഷിത ലോഗിൻ ഇതുവരെ ഉണ്ടാക്കിയിട്ടില്ല. <button type="button" class="btn sm" data-act="migrate-staff">ഇപ്പോൾ ഉണ്ടാക്കുക</button></div>' : "");
     }
     if (can("ann")) {
       const arr = live("announcements").sort((a, c) => (c.at || 0) - (a.at || 0));
@@ -609,9 +700,9 @@
     if (isAdmin()) {
       o += '<section class="card stack"><h2>ഓഫീസ് വിവരങ്ങൾ</h2><label class="f">പേര്<input id="b_name" class="in" value="' + h(b.name) + '"></label><label class="f">ടാഗ്‌ലൈൻ<input id="b_tag" class="in" value="' + h(b.tag) + '"></label><div class="g2"><label class="f">സ്ഥലം<input id="b_place" class="in" value="' + h(b.place) + '"></label><label class="f">ഫോൺ<input id="b_phone" class="in" inputmode="tel" value="' + h(b.phone) + '"></label></div><label class="f">WhatsApp നമ്പർ<input id="b_wa" class="in" inputmode="tel" value="' + h(b.wa) + '"></label><label class="f">പ്രവർത്തന സമയം<input id="b_hours" class="in" value="' + h(b.hours) + '" placeholder="ഉദാ: രാവിലെ 9 – വൈകിട്ട് 5"></label><label class="f">വിവരണം<textarea id="b_about" class="ta" rows="3">' + h(b.about) + '</textarea></label><button type="button" class="btn" data-act="save-info">സേവ്</button></section>' +
         '<section class="card">' + hd("സ്റ്റാഫ്", "ഓരോരുത്തർക്കും സ്വന്തം കോഡും അനുമതികളും", '<button type="button" class="btn sm" data-act="add-staff">' + ICON.plus + "പുതിയത്</button>") + '<div class="list">' +
-        (live("staff").length ? live("staff").sort(byName).map((p) => '<div class="li"><div class="av">' + h(initial(p.name)) + '</div><div class="grow"><div class="t">' + h(p.name) + '</div><div class="s">' + PERMS.filter((x) => (p.perms && x[0] in p.perms ? p.perms[x[0]] : x[2])).length + " / " + PERMS.length + ' അനുമതികൾ</div><div class="s">കോഡ്: <b class="codechip">' + h(p.code || "മാറ്റിയാൽ കാണാം") + "</b></div></div>" + eb("edit-staff", p.id, ICON.edit) + eb("del-staff", p.id, ICON.trash, "red") + "</div>").join("") : emptyBox("സ്റ്റാഫ് ഇല്ല")) + "</div></section>" +
-        '<section class="card stack"><h2>കോഡുകൾ</h2><div class="codebox"><span>അഡ്മിൻ കോഡ്</span><b>' + h(ST().adminCode || "മാറ്റിയാൽ കാണാം") + '</b></div>' + live("staff").sort(byName).map((p) => '<div class="codebox"><span>' + h(p.name) + "</span><b>" + h(p.code || "—") + "</b></div>").join("") +
-        '<label class="f" style="margin-top:8px">അഡ്മിൻ കോഡ് മാറ്റുക (4–12 അക്ഷരം/അക്കം)<input id="a_pin" class="in" autocomplete="off" maxlength="12" placeholder="പുതിയ കോഡ്"></label><button type="button" class="btn ghost" data-act="save-pin">അഡ്മിൻ കോഡ് മാറ്റുക</button><div class="muted">സ്റ്റാഫിന്റെ കോഡ് മാറ്റാൻ മുകളിലെ സ്റ്റാഫ് പട്ടികയിൽ എഡിറ്റ് അമർത്തുക.</div></section>';
+        (live("staff").length ? live("staff").sort(byName).map((p) => '<div class="li"><div class="av">' + h(initial(p.name)) + '</div><div class="grow"><div class="t">' + h(p.name) + '</div><div class="s">' + PERMS.filter((x) => (p.perms && x[0] in p.perms ? p.perms[x[0]] : x[2])).length + " / " + PERMS.length + ' അനുമതികൾ</div><div class="s">കോഡ്: <b class="codechip">' + h(((state.data.staffCodes[p.id] || {}).code) || "—") + "</b></div></div>" + eb("edit-staff", p.id, ICON.edit) + eb("del-staff", p.id, ICON.trash, "red") + "</div>").join("") : emptyBox("സ്റ്റാഫ് ഇല്ല")) + "</div></section>" +
+        '<section class="card stack"><h2>കോഡുകൾ</h2><div class="codebox"><span>അഡ്മിൻ പാസ്‌വേഡ്</span><b>Firebase-ൽ (ഇവിടെ കാണിക്കില്ല)</b></div>' + live("staff").sort(byName).map((p) => '<div class="codebox"><span>' + h(p.name) + "</span><b>" + h(((state.data.staffCodes[p.id] || {}).code) || "—") + "</b></div>").join("") +
+        '<label class="f" style="margin-top:8px">അഡ്മിൻ പാസ്‌വേഡ് മാറ്റുക (കുറഞ്ഞത് 8 അക്ഷരം)<input id="a_pin" class="in" type="password" autocomplete="new-password" placeholder="പുതിയ പാസ്‌വേഡ്"></label><button type="button" class="btn ghost" data-act="save-pin">അഡ്മിൻ പാസ്‌വേഡ് മാറ്റുക</button><div class="muted">സ്റ്റാഫിന്റെ കോഡ് മാറ്റാൻ മുകളിലെ സ്റ്റാഫ് പട്ടികയിൽ എഡിറ്റ് അമർത്തുക.</div></section>';
     }
     if (can("reports")) {
       o += '<section class="card stack"><h2>റിപ്പോർട്ട്</h2><div class="muted">മാസാവസാനം ആരൊക്കെ, ഏതൊക്കെ ഉപകരണങ്ങൾ കൊണ്ടുപോയി എന്ന PDF (പ്രിന്റ് ചെയ്യാം)</div><label class="f">മാസം<input id="rp_month" type="month" class="in" value="' + h(ui.month) + '"></label><div class="row wrap"><button type="button" class="btn" data-act="month-pdf">' + ICON.file + 'മാസ റിപ്പോർട്ട് PDF</button><button type="button" class="btn ghost" data-act="month-wa">' + ICON.msg + 'WhatsApp</button></div>' +
@@ -961,19 +1052,74 @@
       onOk() { save("replies", { id: l.id, loanId: l.id, token: l.token, answer: mv("ans"), when: mv("when") || "", msg: clean(mv("msg")), at: Date.now(), ack: true, deleted: false, manual: true }); toast("✅ രേഖപ്പെടുത്തി"); render(); }
     });
   }
+  const validStaffCode = (c) => /^[a-z0-9]{8,12}$/.test(c);
+  // Admin only: a staff member is a real Firebase Auth user (password = code); the code itself is kept only in the admin-only staffCodes node.
+  async function provisionStaff(base, code, old) {
+    try {
+      if (isPlaceholder(CFG.API_KEY)) throw new Error("API key ചേർത്തിട്ടില്ല");
+      if (!online()) throw new Error("ഇന്റർനെറ്റ് വേണം");
+      const rev = ((old && old.rev) || 0) + 1, email = base.id + ".r" + rev + "@santhwanam.app";
+      const j = await authCall("signUp", { email, password: code, returnSecureToken: false });
+      const h1 = await sha(code);
+      const r1 = await dbReq("staffUid/" + j.localId, { method: "PUT", body: true });
+      const r2 = await dbReq("staffLogin/" + h1, { method: "PUT", body: { email, id: base.id, name: base.name } });
+      if (!r1.ok || !r2.ok) throw new Error("HTTP " + (r1.ok ? r2.status : r1.status));
+      if (old) {
+        if (old.authUid) await dbReq("staffUid/" + old.authUid, { method: "DELETE" }).catch(() => {});
+        const oc = state.data.staffCodes[old.id]; if (oc && oc.code && oc.code !== code) await dbReq("staffLogin/" + (await sha(oc.code)), { method: "DELETE" }).catch(() => {});
+      }
+      const rec = { id: base.id, name: base.name, perms: base.perms, deleted: false, authEmail: email, authUid: j.localId, rev };
+      state.data.staff[rec.id] = Object.assign({}, rec, { updatedAt: 0 }); save("staff", state.data.staff[rec.id]);
+      save("staffCodes", { id: rec.id, code, deleted: false });
+      return true;
+    } catch (e) {
+      const m = String((e && e.message) || e);
+      toast("സ്റ്റാഫിനെ സേവ് ചെയ്യാൻ കഴിഞ്ഞില്ല: " + (/WEAK_PASSWORD/.test(m) ? "കോഡ് ദുർബലം (6+ അക്ഷരം വേണം)" : m), "error");
+      return false;
+    }
+  }
+  async function removeStaff(rec) {
+    try {
+      if (rec.authUid) { const r = await dbReq("staffUid/" + rec.authUid, { method: "DELETE" }); if (!r.ok) throw new Error("HTTP " + r.status); }
+      const c = state.data.staffCodes[rec.id]; if (c && c.code) await dbReq("staffLogin/" + (await sha(c.code)), { method: "DELETE" }).catch(() => {});
+      softDelete("staff", rec.id); if (c) softDelete("staffCodes", rec.id);
+      toast("നീക്കം ചെയ്തു"); render();
+    } catch (e) { toast("നീക്കം ചെയ്യാൻ കഴിഞ്ഞില്ല: " + ((e && e.message) || e), "error"); }
+  }
+  // Staff created before the secure login existed: give each a real login using the code they already have
+  async function migrateStaff() {
+    const list = live("staff").filter((s) => !s.authEmail);
+    let ok = 0, skip = [];
+    for (const s of list) {
+      const code = codeKey(s.code || (state.data.staffCodes[s.id] || {}).code || "");
+      if (!/^[a-z0-9]{6,12}$/.test(code)) { skip.push(s.name); continue; }
+      if (await provisionStaff({ id: s.id, name: s.name, perms: s.perms || {} }, code, null)) ok++; else break;
+    }
+    toast(ok + " സ്റ്റാഫിന് പുതിയ ലോഗിൻ ഉണ്ടാക്കി" + (skip.length ? ". ഇവരുടെ കോഡ് 6 അക്ഷരത്തിൽ കുറവാണ് — എഡിറ്റ് ചെയ്ത് പുതിയ കോഡ് നൽകുക: " + skip.join(", ") : ""), skip.length ? "error" : undefined);
+    render();
+  }
   function staffModal(rec) {
     const cur = (k, d) => (rec && rec.perms && k in rec.perms ? !!rec.perms[k] : !!d);
+    const oldCode = rec ? ((state.data.staffCodes[rec.id] || {}).code || "") : "";
     openModal({
       title: rec ? "സ്റ്റാഫ് എഡിറ്റ്" : "പുതിയ സ്റ്റാഫ്",
-      body: '<label class="f">പേര്<input id="mf_name" class="in" value="' + h(rec ? rec.name : "") + '"></label><label class="f">കോഡ് (4–12 അക്ഷരം/അക്കം, ഇംഗ്ലീഷ്)<input id="mf_pin" class="in" autocomplete="off" maxlength="12" value="' + h(rec && rec.code ? rec.code : "") + '"></label>' +
+      body: '<label class="f">പേര്<input id="mf_name" class="in" value="' + h(rec ? rec.name : "") + '"></label><label class="f">കോഡ് (8–12 അക്ഷരം/അക്കം, ഇംഗ്ലീഷ്) — ഇതാണ് ലോഗിൻ പാസ്‌വേഡ്<input id="mf_pin" class="in" autocomplete="off" maxlength="12" value="' + h(oldCode) + '"></label>' +
         '<div class="permbox"><b>ചെയ്യാൻ അനുവദിക്കുന്നവ</b>' + PERMS.map((p) => '<label class="chk"><input type="checkbox" id="pm_' + p[0] + '"' + (cur(p[0], p[2]) ? " checked" : "") + "><span>" + h(p[1]) + "</span></label>").join("") + "</div>",
       onOk() {
         const name = clean(mv("name")); if (!name) return modalErr("പേര് നൽകുക.");
-        const p = codeKey(mv("pin")); if (!rec && !validCode(p)) return modalErr("4–12 അക്ഷരം/അക്കമുള്ള കോഡ് നൽകുക."); if (p && !validCode(p)) return modalErr("കോഡ് 4–12 അക്ഷരം/അക്കം (ഇംഗ്ലീഷ് അക്ഷരം, സംഖ്യ) മാത്രം ആകണം.");
-        const hs = p ? pinHash(p) : rec.pinHash;
-        if (hs === ST().adminHash || (p && state.data.codes[p] && !state.data.codes[p].deleted) || live("staff").some((x) => x.id !== (rec && rec.id) && x.pinHash === hs)) return modalErr("ഈ കോഡ് ഉപയോഗത്തിലുണ്ട്. മറ്റൊന്ന് നൽകുക.");
+        const p = codeKey(mv("pin"));
+        if (!validStaffCode(p) && !(rec && p === oldCode && /^[a-z0-9]{6,12}$/.test(p))) return modalErr("8–12 അക്ഷരം/അക്കമുള്ള കോഡ് നൽകുക (ഇംഗ്ലീഷ് അക്ഷരം, സംഖ്യ).");
         const perms = {}; PERMS.forEach((x) => { perms[x[0]] = !!($("#pm_" + x[0]) && $("#pm_" + x[0]).checked); });
-        save("staff", Object.assign(rec ? {} : { id: uid("st"), deleted: false }, rec || {}, { name, pinHash: hs, perms, code: p || (rec ? rec.code || "" : "") })); toast("✅ സേവ് ചെയ്തു"); render();
+        const apply = async () => {
+          if (rec && rec.authEmail && p === oldCode) {
+            // same code: only name / permissions change
+            const r2 = Object.assign({}, rec, { name, perms }); delete r2.code; delete r2.pinHash; save("staff", r2);
+            await dbReq("staffLogin/" + (await sha(p)), { method: "PUT", body: { email: rec.authEmail, id: rec.id, name } }).catch(() => {});
+            toast("✅ സേവ് ചെയ്തു"); render(); return;
+          }
+          if (await provisionStaff({ id: rec ? rec.id : uid("st"), name, perms }, p, rec)) { toast("✅ സേവ് ചെയ്തു"); render(); }
+        };
+        (async () => { if (await staffCodeTaken(p, rec && rec.id)) return toast("ഈ കോഡ് ഉപയോഗത്തിലുണ്ട്. മറ്റൊന്ന് നൽകുക.", "error"); await apply(); })();
       }
     });
   }
@@ -1082,18 +1228,20 @@
     },
     "add-staff"() { if (isAdmin()) staffModal(); },
     "edit-staff"(el) { const r = byId("staff", el.dataset.id); if (r && isAdmin()) staffModal(r); },
-    "del-staff"(el) { const r = byId("staff", el.dataset.id); if (r && isAdmin()) delConfirm("സ്റ്റാഫിനെ നീക്കം ചെയ്യണോ?", r.name, () => softDelete("staff", r.id)); },
+    "del-staff"(el) { const r = byId("staff", el.dataset.id); if (r && isAdmin()) delConfirm("സ്റ്റാഫിനെ നീക്കം ചെയ്യണോ?", r.name, () => removeStaff(r)); },
     "save-info"() {
       if (!isAdmin()) return; const n = clean($("#b_name").value); if (!n) return toast("പേര് നൽകുക", "error");
       const b = INFO(); Object.assign(b, { name: n, tag: clean($("#b_tag").value), place: clean($("#b_place").value), phone: clean($("#b_phone").value), wa: clean($("#b_wa").value), hours: clean($("#b_hours").value), about: String($("#b_about").value || "").trim() });
       save("info", b); toast("✅ സേവ് ചെയ്തു"); render();
     },
-    "save-pin"() {
+    async "save-pin"() {
       if (!isAdmin()) return;
-      const a = codeKey($("#a_pin").value); if (!validCode(a)) return toast("കോഡ് 4–12 അക്ഷരം/അക്കം (ഇംഗ്ലീഷ്/സംഖ്യ) ആയിരിക്കണം", "error");
-      const hs = pinHash(a); if (live("staff").some((x) => x.pinHash === hs) || (state.data.codes[a] && !state.data.codes[a].deleted)) return toast("ഈ കോഡ് ഉപയോഗത്തിലുണ്ട്", "error");
-      const s2 = ST(); s2.adminHash = hs; s2.adminCode = a; save("settings", s2); toast("✅ കോഡ് മാറ്റി"); render();
+      const a = String($("#a_pin").value || "");
+      if (a.length < 8) return toast("പാസ്‌വേഡ് കുറഞ്ഞത് 8 അക്ഷരം വേണം", "error");
+      try { const j = await authCall("update", { idToken: await getToken(), password: a, returnSecureToken: true }); setAuth(j); toast("✅ അഡ്മിൻ പാസ്‌വേഡ് മാറ്റി"); $("#a_pin").value = ""; }
+      catch (e) { toast("മാറ്റാൻ കഴിഞ്ഞില്ല: " + ((e && e.message) || e), "error"); }
     },
+    "migrate-staff"() { if (isAdmin()) migrateStaff(); },
     async "stock-pdf"(el) { if (!need("reports")) return; el.disabled = true; try { download(new Blob([await buildStockPdf()], { type: "application/pdf" }), "Santhwanam_Stock_" + todayIso() + ".pdf"); toast("PDF ഡൗൺലോഡ് ചെയ്തു"); } catch (e) { toast("PDF നിർമ്മിക്കാൻ കഴിഞ്ഞില്ല", "error"); } el.disabled = false; },
     "stock-wa"() {
       if (!need("reports")) return;
@@ -1125,8 +1273,9 @@
     if (!hasDb() || !online()) { replyCtx.err = "ഇന്റർനെറ്റ് ഇല്ല / ഓൺലൈൻ സിങ്ക് സജ്ജമല്ല. ഓൺലൈൻ ആയ ശേഷം വീണ്ടും ശ്രമിക്കുക."; render(); return true; }
     try {
       try { mergeRemote({ info: await getJson("info") }); } catch (e) { /* optional */ }
-      const loan = await getJson("loans/" + replyCtx.id);
-      if (!loan || loan.token !== replyCtx.token) replyCtx.err = "ഈ ലിങ്ക് ശരിയല്ല അല്ലെങ്കിൽ കാലഹരണപ്പെട്ടു.";
+      const lk = await getJson("replyLinks/" + replyCtx.id);
+      const loan = lk && lk.tokHash === (await sha(replyCtx.token)) && !lk.deleted ? lk : null;
+      if (!loan) replyCtx.err = "ഈ ലിങ്ക് ശരിയല്ല അല്ലെങ്കിൽ കാലഹരണപ്പെട്ടു.";
       else replyCtx.loan = loan;
     } catch (e) { replyCtx.err = "സെർവറുമായി ബന്ധപ്പെടാൻ കഴിഞ്ഞില്ല (" + ((e && e.message) || e) + ")."; }
     render(); return true;
