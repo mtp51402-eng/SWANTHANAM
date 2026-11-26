@@ -1,4 +1,4 @@
-/* സ്വാന്തന കേന്ദ്രം — ഉപകരണ ലൈബ്രറി (പാലത്തുങ്കര)
+/* സാന്ത്വന കേന്ദ്രം — ഉപകരണ ലൈബ്രറി (പാലത്തുങ്കര)
    Offline-first PWA. Data: IndexedDB (device) ⇄ Firebase Realtime Database (REST). */
 (function () {
   "use strict";
@@ -137,7 +137,7 @@
   /* =====================================================================
      3. STATE & LOCAL PERSISTENCE
      ===================================================================== */
-  const defaultInfo = () => ({ id: "main", updatedAt: 0, name: "സ്വാന്തന കേന്ദ്രം", tag: "മുസ്ലിം ജമാഅത്ത് • SYS • SSF", place: "പാലത്തുങ്കര", phone: "", wa: "", hours: "", about: "രോഗികൾക്കും വികലാംഗർക്കും ആവശ്യമായ ഉപകരണങ്ങൾ ആവശ്യക്കാർക്ക് ഉപയോഗത്തിനായി നൽകുന്ന സേവന കേന്ദ്രം." });
+  const defaultInfo = () => ({ id: "main", updatedAt: 0, name: "സാന്ത്വന കേന്ദ്രം", tag: "മുസ്ലിം ജമാഅത്ത് • SYS • SSF", place: "പാലത്തുങ്കര", phone: "", wa: "", hours: "", about: "രോഗികൾക്കും വികലാംഗർക്കും ആവശ്യമായ ഉപകരണങ്ങൾ ആവശ്യക്കാർക്ക് ഉപയോഗത്തിനായി നൽകുന്ന സേവന കേന്ദ്രം." });
   const defaultSettings = () => ({ id: "main", updatedAt: 0 });
   function defaultState() {
     return {
@@ -689,7 +689,7 @@
     }
     if (can("services")) {
       const arr = live("services").sort((a, c) => (a.order || 0) - (c.order || 0) || (a.at || 0) - (c.at || 0));
-      o += '<section class="card">' + hd("പ്രവർത്തനങ്ങൾ", "സ്വാന്തന കേന്ദ്രത്തിന് കീഴിലെ പ്രവർത്തനങ്ങൾ — എല്ലാവർക്കും കാണും", '<button type="button" class="btn sm" data-act="add-svc">' + ICON.plus + "പുതിയത്</button>") + '<div class="list">' +
+      o += '<section class="card">' + hd("പ്രവർത്തനങ്ങൾ", "സാന്ത്വന കേന്ദ്രത്തിന് കീഴിലെ പ്രവർത്തനങ്ങൾ — എല്ലാവർക്കും കാണും", '<button type="button" class="btn sm" data-act="add-svc">' + ICON.plus + "പുതിയത്</button>") + '<div class="list">' +
         (arr.length ? arr.map((x) => '<div class="li wrapli"><div class="grow"><div class="t">' + h(x.title) + '</div><div class="s">' + h(x.text) + '</div></div><div class="acts-row row">' + eb("edit-svc", x.id, ICON.edit) + eb("del-svc", x.id, ICON.trash, "red") + "</div></div>").join("") : emptyBox("പ്രവർത്തനങ്ങൾ ചേർത്തിട്ടില്ല")) + "</div></section>";
     }
     if (can("members")) {
