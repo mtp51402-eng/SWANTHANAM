@@ -473,3 +473,6 @@ h1, h2, h3 { letter-spacing: 0; }
 [data-theme="dark"] .codebox { background: #0a2523; }
 [data-theme="dark"] .notice { background: #2e2410; border-color: #5a461a; color: #f3e2b8; }
 @media (prefers-reduced-motion: reduce) { .g-sheet { animation: none; } }
+
+/* v2.0.2: no availability colour on item cards */
+.icard, .icard.ok, .icard.no { border-left: 1px solid var(--line) !important; }
