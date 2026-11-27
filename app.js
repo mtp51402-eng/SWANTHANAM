@@ -17,7 +17,7 @@
     DB_KEY: "snt_db_url",
     SYNC_DEBOUNCE: 1200,
     POLL_MS: 45000,
-    AUTOLOCK_MS: 5 * 60 * 1000,
+    AUTOLOCK_MS: 6 * 60 * 60 * 1000, // ഇത്രയും സമയം ആപ്പ് ഉപയോഗിക്കാതിരുന്നാൽ മാത്രം വീണ്ടും ലോഗിൻ
     MAX_TRIES: 5,
     LOCK_MS: 30000
   };
@@ -170,11 +170,20 @@
   }
   async function idbGet(k) { const db = await withTimeout(idb(), 2500); return new Promise((res, rej) => { const r = db.transaction("kv", "readonly").objectStore("kv").get(k); r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error); }); }
   async function idbSet(k, v) { const db = await withTimeout(idb(), 2500); return new Promise((res, rej) => { const tx = db.transaction("kv", "readwrite"); tx.objectStore("kv").put(v, k); tx.oncomplete = () => res(); tx.onerror = () => rej(tx.error); }); }
+  let loadOk = true;
   async function loadState() {
     const base = defaultState();
-    let saved = null;
-    try { saved = await withTimeout(idbGet("state"), 3000); } catch (e) { /* ignore */ }
-    if (!saved) { try { const raw = localStorage.getItem("snt_state_v1"); if (raw) saved = JSON.parse(raw); } catch (e) { /* ignore */ } }
+    // IndexedDB + localStorage രണ്ടിലും സേവ് ചെയ്യുന്നു; വായിക്കാൻ 3 തവണ ശ്രമിക്കും; പുതിയ കോപ്പി എടുക്കും
+    let a = { ok: false };
+    for (let i = 0; i < 3 && !a.ok; i++) {
+      try { a = { ok: true, v: await withTimeout(idbGet("state"), 5000) }; } catch (e) { await new Promise((r) => setTimeout(r, 400)); }
+    }
+    let b = null;
+    try { const raw = localStorage.getItem("snt_state_v1"); if (raw) b = JSON.parse(raw); } catch (e) { /* ignore */ }
+    const ta = a.ok && a.v && typeof a.v === "object" ? (a.v.savedAt || 1) : 0;
+    const tb = b && typeof b === "object" ? (b.savedAt || 1) : 0;
+    const saved = ta || tb ? (ta >= tb ? a.v : b) : null;
+    if (!a.ok && !b) loadOk = false; // വായിക്കാൻ കഴിഞ്ഞില്ല: ശൂന്യമായ ഡാറ്റ കൊണ്ട് മുകളിലെഴുതില്ല
     if (saved && typeof saved === "object" && saved.data) {
       state = Object.assign(base, saved);
       COLS.forEach((c) => { if (!state.data[c] || typeof state.data[c] !== "object") state.data[c] = base.data[c]; });
@@ -191,8 +200,10 @@
   function persist() { clearTimeout(persistTimer); persistTimer = setTimeout(persistNow, 250); }
   async function persistNow() {
     clearTimeout(persistTimer);
-    try { await withTimeout(idbSet("state", JSON.parse(JSON.stringify(state))), 4000); }
-    catch (e) { try { localStorage.setItem("snt_state_v1", JSON.stringify(state)); } catch (e2) { /* full */ } }
+    if (!loadOk) return;
+    state.savedAt = Date.now();
+    try { localStorage.setItem("snt_state_v1", JSON.stringify(state)); } catch (e) { /* full */ }
+    try { await withTimeout(idbSet("state", JSON.parse(JSON.stringify(state))), 4000); } catch (e) { /* localStorage copy remains */ }
   }
 
   /* =====================================================================
@@ -264,7 +275,19 @@
   const url = (path) => dbBase().replace(/\/+$/, "") + "/" + CFG.ROOT + (path ? "/" + path : "") + ".json";
   const enc = encodeURIComponent;
   const isPlaceholder = (v) => !v || /^PASTE_/.test(v);
-  let auth = null; // {idToken, refreshToken, exp, uid} — admin/staff, memory only
+  let auth = null; // {idToken, refreshToken, exp, uid} — admin/staff
+  // ലോഗിൻ ഓർമ്മിക്കൽ: ആപ്പ് മിനിമൈസ് ചെയ്യുമ്പോൾ ഫോൺ ടാബ് ക്ലോസ് ചെയ്താലും AUTOLOCK_MS-നുള്ളിൽ വീണ്ടും തുറന്നാൽ ലോഗിൻ തുടരും
+  const REM_KEY = "snt_sess";
+  function rememberSession() { try { if (session && auth) localStorage.setItem(REM_KEY, JSON.stringify({ session, auth, at: Date.now() })); } catch (e) { /* ignore */ } }
+  function forgetSession() { try { localStorage.removeItem(REM_KEY); } catch (e) { /* ignore */ } }
+  function restoreSession() {
+    try {
+      const r = JSON.parse(localStorage.getItem(REM_KEY) || "null");
+      if (!r || !r.session || !r.auth) return false;
+      if (Date.now() - (r.at || 0) > CFG.AUTOLOCK_MS) { forgetSession(); return false; }
+      session = r.session; auth = r.auth; ui.tab = "s_home"; return true;
+    } catch (e) { return false; }
+  }
   async function sha(s) { const b = await crypto.subtle.digest("SHA-256", new TextEncoder().encode("snt1|" + s)); return Array.from(new Uint8Array(b)).map((x) => x.toString(16).padStart(2, "0")).join(""); }
   async function authCall(endpoint, body) {
     const r = await fetch("https://identitytoolkit.googleapis.com/v1/accounts:" + endpoint + "?key=" + enc(CFG.API_KEY), { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
@@ -280,6 +303,7 @@
     const j = await r.json().catch(() => ({}));
     if (!r.ok) { const e = new Error("AUTH"); e.status = 401; throw e; }
     auth = { idToken: j.id_token, refreshToken: j.refresh_token || auth.refreshToken, exp: Date.now() + (Number(j.expires_in) || 3600) * 1000, uid: j.user_id || auth.uid };
+    rememberSession();
     return auth.idToken;
   }
   async function dbReq(path, opt) {
@@ -483,7 +507,7 @@
       }
       if (sess) {
         state.lock = { n: 0, until: 0 }; persist();
-        session = sess; ui.gate = false; ui.tab = "s_home";
+        session = sess; ui.gate = false; ui.tab = "s_home"; rememberSession();
         autoBackupCheck(); render(); toast("സ്വാഗതം " + sess.name); sync(false).then(() => { if (isAdmin()) adminCleanup(); });
         return;
       }
@@ -517,7 +541,7 @@
   }
   const PRIVATE_COLS = ["loans", "requests", "replies", "members", "codes", "staff", "staffCodes", "replyLinks"];
   function logout() {
-    session = null; auth = null; ui.tab = "p_items"; ui.gate = false; modal = null; renderModal();
+    session = null; auth = null; forgetSession(); ui.tab = "p_items"; ui.gate = false; modal = null; renderModal();
     // do not leave members / loans on a shared phone (only when nothing is still waiting to upload)
     if (!Object.keys(state.dirty).some((k) => PRIVATE_COLS.indexOf(k.split("/")[0]) >= 0 && k.split("/")[0] !== "requests")) {
       const mine = {}; state.myReq.forEach((id) => { if (state.data.requests[id]) mine[id] = state.data.requests[id]; });
@@ -676,12 +700,12 @@
     const seg = (k, t, n) => '<button type="button" data-act="reqf" data-k="' + k + '" class="' + (ui.reqF === k ? "on" : "") + '">' + t + (n ? " (" + n + ")" : "") + "</button>";
     const all = live("requests");
     const arr = all.filter((r) => (ui.reqF === "new" ? r.status === "new" : ui.reqF === "wait" ? r.status === "waiting" : r.status !== "new" && r.status !== "waiting")).sort(newest);
-    return '<section class="card stack"><h2>അപേക്ഷകൾ</h2><div class="seg">' + seg("new", "പുതിയത്", all.filter((r) => r.status === "new").length) + seg("wait", "കാത്തിരിക്കുന്നു", all.filter((r) => r.status === "waiting").length) + seg("done", "പൂർത്തിയായവ") + '</div><button type="button" class="btn ghost block" data-act="add-req">' + ICON.plus + "ഫോൺ / നേരിട്ട് വന്ന അപേക്ഷ ചേർക്കുക</button></section>" +
+    return '<section class="card stack"><h2>അപേക്ഷകൾ</h2><div class="seg">' + seg("new", "പുതിയത്", all.filter((r) => r.status === "new").length) + seg("wait", "കാത്തിരിക്കുന്നു", all.filter((r) => r.status === "waiting").length) + seg("done", "പൂർത്തിയായവ") + '</div><button type="button" class="btn ghost block" data-act="add-req">' + ICON.plus + "ഫോൺ / നേരിട്ട് വന്ന അപേക്ഷ ചേർക്കുക</button>" + (ui.reqF === "done" && arr.length && can("reqs") ? '<button type="button" class="btn ghost block red" data-act="clear-done-req">' + ICON.trash + "പൂർത്തിയായ " + arr.length + " അപേക്ഷയും നീക്കം ചെയ്യുക</button>" : "") + "</section>" +
       '<section class="card"><div class="list">' + (arr.length ? arr.map((r) => {
         const it = r.itemId ? byId("items", r.itemId) : null, a = it ? availQty(it) : 0;
         const open = r.status === "new" || r.status === "waiting";
         return reqCard(r, true).replace(/<\/div>$/, "") + (open ? '<div class="acts-row row">' + telBtn(r.phone) + waBtn(r.phone) + '<button type="button" class="btn sm" data-act="req-allow" data-id="' + h(r.id) + '">' + ICON.check + "അനുവദിക്കുക</button>" + '<button type="button" class="btn sm ghost" data-act="req-no" data-id="' + h(r.id) + '">ലഭ്യമല്ല</button>' + (it && a === 0 ? '<button type="button" class="btn sm ghost wa" data-act="req-ask" data-id="' + h(r.id) + '">' + ICON.bell + "ഉപയോഗിക്കുന്നവരോട് ചോദിക്കുക</button>" : "") + "</div>" : "") +
-          (isAdmin() ? '<div class="acts-row row"><button type="button" class="btn sm ghost red" data-act="del-req" data-id="' + h(r.id) + '">' + ICON.trash + "</button></div>" : "") + "</div>";
+          (can("reqs") ? '<div class="acts-row row"><button type="button" class="btn sm ghost red" data-act="del-req" data-id="' + h(r.id) + '">' + ICON.trash + "</button></div>" : "") + "</div>";
       }).join("") : emptyBox("ഒന്നും ഇല്ല")) + "</div></section>";
   }
 
@@ -1224,7 +1248,13 @@
     },
     "req-no"(el) { const r = byId("requests", el.dataset.id); if (r && need("reqs")) noModal(r); },
     "req-ask"(el) { const r = byId("requests", el.dataset.id); if (r && need("reqs")) askModal(r); },
-    "del-req"(el) { const r = byId("requests", el.dataset.id); if (r && isAdmin()) delConfirm("അപേക്ഷ നീക്കം ചെയ്യണോ?", r.name, () => softDelete("requests", r.id)); },
+    "clear-done-req"() {
+      if (!need("reqs")) return;
+      const list = live("requests").filter((r) => r.status !== "new" && r.status !== "waiting");
+      if (!list.length) return;
+      delConfirm("പൂർത്തിയായ അപേക്ഷകൾ നീക്കം ചെയ്യണോ?", list.length + " അപേക്ഷകൾ ലിസ്റ്റിൽ നിന്ന് നീക്കം ചെയ്യും. 'പുതിയത്', 'കാത്തിരിക്കുന്നു' എന്നിവയ്ക്ക് മാറ്റമില്ല.", () => list.forEach((r) => softDelete("requests", r.id)));
+    },
+    "del-req"(el) { const r = byId("requests", el.dataset.id); if (r && can("reqs")) delConfirm("അപേക്ഷ നീക്കം ചെയ്യണോ?", r.name, () => softDelete("requests", r.id)); },
 
     /* admin */
     "add-ann"() { if (need("ann")) annModal(); },
@@ -1339,7 +1369,7 @@
     window.addEventListener("online", () => { updateStatus(); sync(false); });
     window.addEventListener("offline", updateStatus);
     document.addEventListener("visibilitychange", () => {
-      if (document.visibilityState === "hidden") { hiddenAt = Date.now(); persistNow(); }
+      if (document.visibilityState === "hidden") { hiddenAt = Date.now(); rememberSession(); persistNow(); }
       else {
         if (session && hiddenAt && Date.now() - hiddenAt > CFG.AUTOLOCK_MS) { logout(); toast("സുരക്ഷയ്ക്കായി ലോക്ക് ചെയ്തു"); }
         if (online()) sync(false);
@@ -1352,10 +1382,15 @@
 
   async function boot() {
     await loadState();
+    if (!loadOk) {
+      toast("ഡാറ്റ വായിക്കാൻ കഴിഞ്ഞില്ല. ആപ്പ് പൂർണമായി അടച്ച് വീണ്ടും തുറക്കുക.", "error");
+      const rt = setInterval(async () => { try { await withTimeout(idbGet("state"), 5000); clearInterval(rt); location.reload(); } catch (e) { /* retry */ } }, 4000);
+    }
     applyTheme();
     try { const q = new URLSearchParams(location.search).get("db"); if (q && /^https:\/\/[a-z0-9.-]+\.(firebaseio\.com|firebasedatabase\.app)\/?$/i.test(q)) { localStorage.setItem(CFG.DB_KEY, q.replace(/\/+$/, "")); history.replaceState(null, "", location.pathname + location.hash); } } catch (e) { /* ignore */ }
     wire();
-    if (!(await openReplyPage(location.hash))) render();
+    if (!location.hash && restoreSession()) { reconcileAvail(); render(); sync(false); }
+    else if (!(await openReplyPage(location.hash))) render();
     if ("serviceWorker" in navigator && (location.protocol === "https:" || location.hostname === "localhost" || location.hostname === "127.0.0.1")) navigator.serviceWorker.register("sw.js").catch(() => {});
     if (navigator.storage && navigator.storage.persist) navigator.storage.persist().catch(() => {});
     if (online()) sync(false);
